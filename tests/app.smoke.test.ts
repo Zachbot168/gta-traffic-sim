@@ -46,22 +46,39 @@ describe('browser front end', { timeout: 240_000 }, () => {
 
   it('steps through every stage without crashing', () => {
     for (const stage of STAGES.slice(1)) {
-      press('ArrowRight');
+      // '.' always means next stage. The arrow keys steer on the manual-driving stage.
+      press('.');
       runFrames(12);
       expect(hudText()).toContain(stage.title);
     }
   });
 
   it('survives every control on a bubble stage and a route stage', () => {
-    for (const key of ['4', '3']) {
+    for (const key of ['4', '3', '6']) {
       press(key);
       runFrames(10);
-      for (const k of ['g', 'c', 'b', 's', 'f', 'm', 'm', 'p', '-', '+', 'r', 't', 't', ']', '[', ' ', ' ', '0', 'h', 'Escape']) {
+      for (const k of ['g', 'c', 'b', 's', 'f', 'm', 'm', 'p', '-', '+', 'r', 't', 't', 'w', 'u', 'u', 'y', 'k', 'o', 'x', ']', '[', ' ', ' ', '0', 'h', 'Escape']) {
         press(k);
         runFrames(7);
       }
     }
     expect(hudText().length).toBeGreaterThan(20);
+  });
+
+  it('shows the wanted level and a result once a chase is running', () => {
+    document.querySelectorAll<HTMLButtonElement>('#bar button').forEach((b) => {
+      if (b.textContent === '6a') b.click();
+    });
+    runFrames(20);
+    expect(hudText()).toContain('Wanted');
+    expect(hudText()).toMatch(/IN SIGHT|hidden|ESCAPED|CAUGHT/);
+    // Manual driving: arrow keys steer instead of changing stage.
+    for (let i = 0; i < 3; i++) press('k'); // weave -> hide -> run -> manual
+    runFrames(8);
+    expect(hudText()).toContain('Manual driving');
+    press('ArrowLeft');
+    runFrames(10);
+    expect(hudText()).toContain('6a');
   });
 
   it('reports the coarse search as cheaper and the route as identical', () => {

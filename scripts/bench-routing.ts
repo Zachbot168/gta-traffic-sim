@@ -45,4 +45,10 @@ for (const [cols, rowsN] of SIZES) {
 }
 mkdirSync('out', { recursive: true });
 writeFileSync('out/routing-bench.csv', rows.join('\n') + '\n');
+// The same numbers as JSON, for the chart in the app.
+const json = rows.slice(1).map((r) => {
+  const c = r.split(',');
+  return { intersections: Number(c[0]), nodesFull: Number(c[1]), nodesCoarse: Number(c[2]), searchedFull: Number(c[3]), searchedCoarse: Number(c[4]) };
+});
+writeFileSync('src/app/routing-bench.json', JSON.stringify(json, null, 2) + '\n');
 console.log(rows.join('\n'));

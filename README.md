@@ -12,8 +12,10 @@ A 2D top-down city that rebuilds, piece by piece, the kind of traffic system ope
 | 2 | A* routing gives cars a destination | Search replay, routing on or off |
 | 3 | The coarse graph: keep only the forks | Fork overlay, full vs coarse search |
 | 4 | Traffic only exists in a bubble around the player | Bubble overlay, radial vs along-the-road density check |
+| 5 | Every car drives from a three-number curve, per weather | Weather, curve charts |
+| 6 | Police: vision cones, last known position, dispatch by stars | Stars, escape strategy, police tactic, manual driving |
 
-Still to come: driver performance curves and weather, police with vision cones, and the "can you escape 5 stars" batch experiment.
+The police numbers (units per star, hide timers, damage) and tactics are this project's own. Only the overall shape follows what is documented about GTA V.
 
 ## Run it
 
@@ -30,14 +32,18 @@ npm run build            # one self-contained dist/index.html
 npm run frames           # render a still of every stage to out/frames (no browser needed)
 npm run bench:routing    # full vs coarse search cost as the city grows
 npm run health           # quick traffic health numbers
+npm run chases -- 40     # the escape experiment: 40 chases per configuration (75 configurations)
+npm run chases -- --merge  # combine shard files into data/chase-results.csv and the in-app chart
 ```
+
+The experiment can be split across cores: `npm run chases -- 40 0/2` and `npm run chases -- 40 1/2` in two terminals, then merge.
 
 ## Controls
 
 | Key | Action |
 |---|---|
 | Left / Right | Previous / next stage |
-| 1 to 4 | Jump to a chapter |
+| 1 to 6 | Jump to a chapter |
 | 0 | Replay the current stage from the start |
 | Space | Pause |
 | [ and ] | Slower / faster |
@@ -47,6 +53,12 @@ npm run health           # quick traffic health numbers
 | P | Density check: radial or along the road |
 | - and + | Fewer / more cars |
 | R, T | New route, switch search view |
+| W | Weather: dry or rain |
+| X | Start or restart a police chase (any stage with the hero car) |
+| Y and U | Wanted level down / up |
+| K | Escape strategy (the last option is manual driving) |
+| O | Police tactic |
+| Arrow keys | In manual driving: left / right pick the turn at the next junction, down brakes. Use , and . to change stage |
 | H | Hide panels for recording (Esc or double-click to bring them back) |
 
 Drag to pan, scroll or pinch to zoom. The stage is kept in the URL (`#3b`, or `#3b-clean` with panels hidden), so a shot can be reopened directly.

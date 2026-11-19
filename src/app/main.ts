@@ -3,7 +3,9 @@
  * the stage presets and toggles. Everything here is presentation; the sim itself
  * lives in src/sim and never reads the clock or the screen.
  */
+import { drawChart, layoutCharts, type HitPoint } from '../render/charts';
 import { fitCamera, Renderer, type Camera, type Overlays } from '../render/render';
+import { Chase, COP_LABELS, COP_STRATEGIES, ESCAPE_TIME, FLEE_LABELS, FLEE_STRATEGIES, type ChaseConfig, type FleeStrategy } from '../sim/chase';
 import { Rng } from '../sim/rng';
 import type { RoutingMode } from '../sim/world';
 import { buildScene, makeDemo, STAGES, type Scene } from './stages';
@@ -16,6 +18,10 @@ const canvas = document.getElementById('view') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 const hud = document.getElementById('hud')!;
 const bar = document.getElementById('bar')!;
+const tip = document.createElement('div');
+tip.id = 'tip';
+document.body.appendChild(tip);
+let hits: HitPoint[] = [];
 
 let scene!: Scene;
 let renderer!: Renderer;
@@ -95,7 +101,15 @@ function tick(now: number): void {
     cam.x += (scene.world.hero.x - cam.x) * k;
     cam.y += (scene.world.hero.y - cam.y) * k;
   }
-  renderer.draw(ctx, canvas.width, canvas.height, { x: cam.x, y: cam.y, zoom: cam.zoom * dpr() }, scene.world, scene.overlays, scene.demo);
+  renderer.draw(ctx, canvas.width, canvas.height, { x: cam.x, y: cam.y, zoom: cam.zoom * dpr() }, scene.world, scene.overlays, scene.demo, scene.chase);
+  hits = [];
+  if (scene.charts) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const clean = document.body.classList.contains('clean');
+    const top = clean ? 0 : (hud.offsetTop + hud.offsetHeight) * dpr();
+    const rects = layoutCharts(scene.charts.length, canvas.width, canvas.height, width < 900 ? top : 0, barHeight() * dpr(), dpr());
+    scene.charts.forEach((chart, i) => hits.push(...drawChart(ctx, rects[i]!, chart, dpr())));
+  }
   if (frames++ % 6 === 0) drawHud();
   requestAnimationFrame(tick);
 }
@@ -120,8 +134,8 @@ function drawHud(): void {
   const rows: string[] = [];
   const row = (label: string, value: string, cls = '') => rows.push(`<div class="${cls}"><span>${label}</span><span>${value}</span></div>`);
 
-  row('Cars simulated', fmt(world.vehicles.length));
-  row('Road nodes', `${fmt(world.graph.nodes.length)} full · ${fmt(world.coarse.forks.length)} coarse`);
+  if (!scene.charts) row('Cars simulated', fmt(world.vehicles.length));
+  if (!scene.chase && !scene.charts) row('Road nodes', `${fmt(world.graph.nodes.length)} full · ${fmt(world.coarse.forks.length)} coarse`);
   if (demo) {
     const full = Math.min(demo.revealed, demo.full.trace.length);
     const coarse = Math.min(demo.revealed, demo.coarse.trace.length);
@@ -140,15 +154,49 @@ function drawHud(): void {
       world.config.routing === 'coarse' ? 'hot' : 'cool',
     );
   }
-  if (world.config.spawn !== 'off') {
+  if (scene.chase) chaseRows(scene.chase, row);
+  if (world.config.spawn !== 'off' && !scene.chase) {
+    const civ = world.vehicles.filter((v) => v.kind === 'civ');
+    const mean = civ.reduce((sum, v) => sum + v.v, 0) / Math.max(1, civ.length);
+    row(`Average speed (${world.config.weather})`, `${(mean * 3.6).toFixed(0)} km/h`, world.config.weather === 'rain' ? 'cool' : '');
+  }
+  if (world.config.spawn !== 'off' && !scene.chase && !scene.charts) {
     row('Density check', world.config.spawn === 'radial' ? 'straight-line radius' : 'along the road');
     row('Spawned / removed', `${fmt(world.stats.spawned)} / ${fmt(world.stats.despawned)}`);
   }
-  row('Sim time', `${world.time.toFixed(0)}s${paused ? ' (paused)' : ` at ${SPEEDS[speedIndex]}x`}`);
+  if (!scene.charts) row('Sim time', `${world.time.toFixed(0)}s${paused ? ' (paused)' : ` at ${SPEEDS[speedIndex]}x`}`);
 
   hud.innerHTML =
     `<div class="chapter">${stage.chapter}</div><div class="title">${stage.key} · ${stage.title}</div>` +
     `<div class="caption">${stage.caption}</div><div class="stats">${rows.join('')}</div>`;
+}
+
+function chaseRows(chase: Chase, row: (label: string, value: string, cls?: string) => void): void {
+  const { stars } = chase.config;
+  row('Wanted', '★'.repeat(stars) + '☆'.repeat(5 - stars), 'hot');
+  const need = ESCAPE_TIME[stars]!;
+  if (chase.outcome === 'running') {
+    row('Status', chase.seen ? 'IN SIGHT' : `hidden ${chase.hiddenFor.toFixed(1)} of ${need}s`, chase.seen ? 'hot' : 'cool');
+  } else {
+    const text = { escaped: `ESCAPED in ${chase.elapsed.toFixed(0)}s`, caught: `CAUGHT after ${chase.elapsed.toFixed(0)}s`, timeout: `still running at ${chase.elapsed.toFixed(0)}s` }[chase.outcome];
+    row('Result', text, chase.outcome === 'escaped' ? 'cool' : 'hot');
+  }
+  row('Health', `${Math.max(0, chase.health).toFixed(0)}`);
+  const extras = [chase.heli ? 'helicopter' : '', chase.roadblocks.length ? `${chase.roadblocks.length} roadblock${chase.roadblocks.length > 1 ? 's' : ''}` : ''].filter(Boolean);
+  row('Police units', `${chase.cops.length}${extras.length ? ` + ${extras.join(' + ')}` : ''}`);
+  row('Escape plan', FLEE_LABELS[chase.config.flee]);
+  row('Police tactic', COP_LABELS[chase.config.cops]);
+}
+
+/** Start a fresh chase on the current scene, clearing away any previous one. */
+function startChase(config: Partial<ChaseConfig>): void {
+  const w = scene.world;
+  if (!w.hero || w.config.spawn === 'off') return;
+  w.vehicles = w.vehicles.filter((v) => v.kind !== 'cop');
+  w.blocked.clear();
+  w.hero.halt = false;
+  scene.chase = new Chase(w, config, scene.chase?.occlusion);
+  follow = true;
 }
 
 // ------------------------------------------------------------------ controls
@@ -228,6 +276,38 @@ const controls: Control[] = [
       else w.config.density = Math.min(3, w.config.density * 1.25);
     },
   },
+  {
+    label: () => `Weather: ${scene.world.config.weather}`,
+    key: 'W',
+    on: () => scene.world.config.weather === 'rain',
+    run: () => (scene.world.config.weather = scene.world.config.weather === 'rain' ? 'dry' : 'rain'),
+  },
+  {
+    label: () => (scene.chase ? 'Restart chase' : 'Start a chase'),
+    key: 'X',
+    run: () => startChase(scene.chase ? { ...scene.chase.config } : { stars: 2, flee: 'run', cops: 'intercept' }),
+  },
+  { label: () => 'Star down', key: 'Y', run: () => scene.chase?.setStars(scene.chase.config.stars - 1) },
+  { label: () => 'Star up', key: 'U', run: () => scene.chase?.setStars(scene.chase.config.stars + 1) },
+  {
+    label: () => `Escape: ${scene.chase?.config.flee ?? 'none'}`,
+    key: 'K',
+    run: () => {
+      if (!scene.chase) return;
+      const order: FleeStrategy[] = [...FLEE_STRATEGIES, 'manual'];
+      scene.chase.config.flee = order[(order.indexOf(scene.chase.config.flee) + 1) % order.length]!;
+      scene.chase.input.turn = 0;
+      scene.chase.input.brake = false;
+    },
+  },
+  {
+    label: () => `Police: ${scene.chase?.config.cops ?? 'none'}`,
+    key: 'O',
+    run: () => {
+      if (!scene.chase) return;
+      scene.chase.config.cops = COP_STRATEGIES[(COP_STRATEGIES.indexOf(scene.chase.config.cops) + 1) % COP_STRATEGIES.length]!;
+    },
+  },
   { label: () => 'New route', key: 'R', run: () => newDemo() },
   {
     label: () => `Search view: ${scene.demo?.show ?? 'off'}`,
@@ -278,7 +358,43 @@ function buildBar(): void {
     row.appendChild(b);
   }
   bar.appendChild(row);
+
+  // On-screen steering for the drive-it-yourself stage.
+  if (scene.chase) {
+    const drive = document.createElement('div');
+    drive.className = 'row drive';
+    const steer: [string, () => void, () => boolean][] = [
+      ['Left', () => (scene.chase!.input.turn = -1), () => scene.chase?.input.turn === -1],
+      ['Straight', () => (scene.chase!.input.turn = 0), () => scene.chase?.input.turn === 0],
+      ['Right', () => (scene.chase!.input.turn = 1), () => scene.chase?.input.turn === 1],
+      ['Brake', () => (scene.chase!.input.brake = !scene.chase!.input.brake), () => scene.chase?.input.brake === true],
+    ];
+    for (const [label, run, on] of steer) {
+      const b = document.createElement('button') as HTMLButtonElement & { paint: () => void };
+      b.textContent = label;
+      b.paint = () => {
+        b.classList.toggle('on', on());
+        drive.style.display = scene.chase?.config.flee === 'manual' ? '' : 'none';
+      };
+      b.paint();
+      b.onclick = () => {
+        run();
+        refreshBar();
+      };
+      drive.appendChild(b);
+    }
+    bar.appendChild(drive);
+  }
 }
+
+const manualDriving = () => scene.chase?.config.flee === 'manual' && scene.chase.outcome === 'running';
+
+window.addEventListener('keyup', (e) => {
+  if (!scene.chase) return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') scene.chase.input.turn = 0;
+  if (e.key === 'ArrowDown') scene.chase.input.brake = false;
+  refreshBar();
+});
 
 function refreshBar(): void {
   bar.querySelectorAll('button').forEach((b) => (b as HTMLButtonElement & { paint?: () => void }).paint?.());
@@ -287,6 +403,14 @@ function refreshBar(): void {
 window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const key = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key;
+  if (manualDriving() && key.startsWith('Arrow')) {
+    e.preventDefault();
+    if (key === 'ArrowLeft') scene.chase!.input.turn = -1;
+    if (key === 'ArrowRight') scene.chase!.input.turn = 1;
+    if (key === 'ArrowUp') scene.chase!.input.turn = 0;
+    if (key === 'ArrowDown') scene.chase!.input.brake = true;
+    return refreshBar();
+  }
   if (key === 'ArrowRight' || key === '.') return loadStage(stageIndex + 1);
   if (key === 'ArrowLeft' || key === ',') return loadStage(stageIndex - 1);
   if (key === 'Escape' || (key === 'H' && document.body.classList.contains('clean'))) return setClean(false);
@@ -329,7 +453,25 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 canvas.addEventListener('pointermove', (e) => {
   const p = pointers.get(e.pointerId);
-  if (!p) return;
+  if (!p) {
+    // Hovering a chart: show the value under the pointer.
+    let best: HitPoint | null = null;
+    let bestD = 22 * dpr();
+    for (const h of hits) {
+      const d = Math.hypot(h.x - e.clientX * dpr(), h.y - e.clientY * dpr());
+      if (d < bestD) {
+        bestD = d;
+        best = h;
+      }
+    }
+    tip.style.display = best ? 'block' : 'none';
+    if (best) {
+      tip.textContent = best.text;
+      tip.style.left = `${Math.min(width - 240, best.x / dpr() + 12)}px`;
+      tip.style.top = `${best.y / dpr() - 34}px`;
+    }
+    return;
+  }
   if (pointers.size === 1) {
     cam.x -= (e.clientX - p.x) / cam.zoom;
     cam.y -= (e.clientY - p.y) / cam.zoom;

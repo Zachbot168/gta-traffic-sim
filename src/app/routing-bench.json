@@ -1,0 +1,51 @@
+[
+  {
+    "intersections": 36,
+    "nodesFull": 291,
+    "nodesCoarse": 31,
+    "searchedFull": 101,
+    "searchedCoarse": 11
+  },
+  {
+    "intersections": 99,
+    "nodesFull": 820,
+    "nodesCoarse": 93,
+    "searchedFull": 239,
+    "searchedCoarse": 28
+  },
+  {
+    "intersections": 280,
+    "nodesFull": 2322,
+    "nodesCoarse": 261,
+    "searchedFull": 579,
+    "searchedCoarse": 66
+  },
+  {
+    "intersections": 560,
+    "nodesFull": 4649,
+    "nodesCoarse": 539,
+    "searchedFull": 1130,
+    "searchedCoarse": 131
+  },
+  {
+    "intersections": 1026,
+    "nodesFull": 8503,
+    "nodesCoarse": 983,
+    "searchedFull": 2042,
+    "searchedCoarse": 237
+  },
+  {
+    "intersections": 2052,
+    "nodesFull": 16978,
+    "nodesCoarse": 1954,
+    "searchedFull": 3953,
+    "searchedCoarse": 455
+  },
+  {
+    "intersections": 4104,
+    "nodesFull": 34028,
+    "nodesCoarse": 3931,
+    "searchedFull": 7577,
+    "searchedCoarse": 877
+  }
+]

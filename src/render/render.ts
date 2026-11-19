@@ -2,6 +2,7 @@
  * Draws the world onto a 2D canvas. Works with the browser canvas and with a
  * headless canvas in Node, so the same code makes the live view and test frames.
  */
+import { VISION_HALF_ANGLE, VISION_RANGE, type Chase } from '../sim/chase';
 import type { CoarseGraph } from '../sim/coarse';
 import { ROAD_SPECS, type RoadClass } from '../sim/graph';
 import type { CityMap } from '../sim/mapgen';
@@ -77,7 +78,7 @@ export class Renderer {
     }
   }
 
-  draw(ctx: Ctx, width: number, height: number, cam: Camera, world: World, overlays: Overlays, demo: RouteDemo | null): void {
+  draw(ctx: Ctx, width: number, height: number, cam: Camera, world: World, overlays: Overlays, demo: RouteDemo | null, chase: Chase | null = null): void {
     const g = this.map.graph;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = COLORS.bg;
@@ -194,6 +195,8 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
+    if (chase) this.drawChase(ctx, chase, world, px);
+
     if (overlays.bubble && world.focus) {
       const { spawnInner, spawnOuter, despawn } = world.config;
       const f = world.focus;
@@ -224,6 +227,122 @@ export class Renderer {
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
     }
+
+    if (world.config.weather === 'rain') this.drawRain(ctx, width, height, world.time);
+  }
+
+  /** Police: vision cones clipped by buildings, roadblocks, the helicopter, and the last known position. */
+  private drawChase(ctx: Ctx, chase: Chase, world: World, px: number): void {
+    const hero = world.hero;
+    const live = chase.outcome === 'running';
+
+    for (const rb of chase.roadblocks) {
+      ctx.save();
+      ctx.translate(rb.x, rb.y);
+      ctx.rotate(rb.angle);
+      ctx.fillStyle = rb.sees ? 'rgba(255,77,94,0.22)' : 'rgba(255,209,102,0.10)';
+      ctx.beginPath();
+      ctx.arc(0, 0, 55, 0, Math.PI * 2);
+      ctx.fill();
+      for (const side of [-1, 1]) {
+        ctx.fillStyle = '#f4f6fb';
+        ctx.fillRect(-1.1, side * 3.4 - 2.3, 2.2, 4.6);
+        ctx.fillStyle = Math.floor(world.time * 5) % 2 === (side > 0 ? 0 : 1) ? '#ff3b4e' : '#3b82f6';
+        ctx.fillRect(-1.1, side * 3.4 - 0.5, 2.2, 1);
+      }
+      ctx.restore();
+    }
+
+    if (live) {
+      for (const cop of chase.cops) {
+        const sees = chase.copState.get(cop.id)?.sees ?? false;
+        ctx.fillStyle = sees ? 'rgba(255,77,94,0.30)' : 'rgba(255,209,102,0.14)';
+        ctx.beginPath();
+        ctx.moveTo(cop.x, cop.y);
+        const rays = 16;
+        for (let i = 0; i <= rays; i++) {
+          const angle = cop.heading - VISION_HALF_ANGLE + (2 * VISION_HALF_ANGLE * i) / rays;
+          const r = chase.occlusion.rayLength(cop.x, cop.y, angle, VISION_RANGE);
+          ctx.lineTo(cop.x + Math.cos(angle) * r, cop.y + Math.sin(angle) * r);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    if (live && !chase.seen && hero) {
+      // Where the police think the hero is, and how far the search has spread.
+      const lk = chase.lastKnown;
+      ctx.strokeStyle = '#ffd166';
+      ctx.lineWidth = Math.max(1.5 * px, 1);
+      ctx.setLineDash([6 * px, 6 * px]);
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.arc(lk.x, lk.y, 60 + chase.hiddenFor * 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      const r = Math.max(8 * px, 7);
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath();
+      ctx.arc(lk.x, lk.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0b0f17';
+      ctx.font = `700 ${r * 1.4}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('?', lk.x, lk.y + r * 0.08);
+    }
+
+    if (chase.heli) {
+      const h = chase.heli;
+      ctx.fillStyle = h.sees ? 'rgba(255,77,94,0.13)' : 'rgba(120,190,255,0.07)';
+      ctx.strokeStyle = h.sees ? 'rgba(255,77,94,0.8)' : 'rgba(120,190,255,0.6)';
+      ctx.lineWidth = Math.max(1.5 * px, 1);
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, 100, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      const size = Math.max(7, 7 * px);
+      ctx.save();
+      ctx.translate(h.x, h.y);
+      ctx.fillStyle = '#dfe7f5';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, size * 0.9, size * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.rotate(world.time * 14);
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.lineWidth = size * 0.14;
+      ctx.beginPath();
+      ctx.moveTo(-size * 1.5, 0);
+      ctx.lineTo(size * 1.5, 0);
+      ctx.moveTo(0, -size * 1.5);
+      ctx.lineTo(0, size * 1.5);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /** A cool tint and slanted streaks, drawn in screen space. Purely cosmetic. */
+  private drawRain(ctx: Ctx, width: number, height: number, time: number): void {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = 'rgba(60,95,150,0.13)';
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = 'rgba(190,215,255,0.20)';
+    ctx.lineWidth = Math.max(1, width / 1100);
+    ctx.beginPath();
+    const count = Math.round((width * height) / 9000);
+    const len = height * 0.035;
+    for (let i = 0; i < count; i++) {
+      // Cheap repeatable scatter: each streak falls on its own loop.
+      const fx = (i * 0.61803398875) % 1;
+      const fy = (i * 0.38196601125 + time * (1.6 + (i % 7) * 0.12)) % 1;
+      const x = fx * (width + len) - len * 0.4;
+      const y = fy * (height + len) - len;
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - len * 0.35, y + len);
+    }
+    ctx.stroke();
   }
 
   private strokeRoads(ctx: Ctx, classes: RoadClass[], extra: number, color: (c: RoadClass) => string): void {
@@ -269,16 +388,24 @@ export class Renderer {
       if (v.x < view.x0 || v.x > view.x1 || v.y < view.y0 || v.y > view.y1) continue;
       const type = VEHICLE_TYPES[v.type]!;
       const hero = v.kind === 'hero';
+      const cop = v.kind === 'cop';
+      const flash = Math.floor(world.time * 6 + v.id) % 2 === 0;
+      if (cop) {
+        ctx.fillStyle = flash ? 'rgba(255,59,78,0.25)' : 'rgba(59,130,246,0.28)';
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, Math.max(7, 6 / cam.zoom), 0, Math.PI * 2);
+        ctx.fill();
+      }
       if (hero) {
         ctx.fillStyle = 'rgba(255,59,107,0.22)';
         ctx.beginPath();
         ctx.arc(v.x, v.y, Math.max(9, 9 / cam.zoom), 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.fillStyle = hero ? COLORS.hero : PAINTS[v.paint]!;
+      ctx.fillStyle = hero ? COLORS.hero : cop ? (tiny ? (flash ? '#ff3b4e' : '#3b82f6') : '#f4f6fb') : PAINTS[v.paint]!;
       if (tiny) {
         // Zoomed far out: a dot is all you can see, so make sure you can see it.
-        const size = (hero ? 4 : 2.2) / cam.zoom;
+        const size = (hero || cop ? 4 : 2.2) / cam.zoom;
         ctx.fillRect(v.x - size / 2, v.y - size / 2, size, size);
         continue;
       }
@@ -289,6 +416,16 @@ export class Renderer {
       ctx.fillRect(-type.length, -type.width / 2, type.length, type.width);
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.fillRect(-type.length * 0.42, -type.width / 2 + 0.25, type.length * 0.22, type.width - 0.5);
+      if (cop) {
+        // Black-and-white livery with a light bar.
+        ctx.fillStyle = '#10141c';
+        ctx.fillRect(-type.length, -type.width / 2, type.length * 0.3, type.width);
+        ctx.fillRect(-type.length * 0.22, -type.width / 2, type.length * 0.22, type.width);
+        ctx.fillStyle = flash ? '#ff3b4e' : '#3b82f6';
+        ctx.fillRect(-type.length * 0.6, -type.width / 2, type.length * 0.14, type.width / 2);
+        ctx.fillStyle = flash ? '#3b82f6' : '#ff3b4e';
+        ctx.fillRect(-type.length * 0.6, 0, type.length * 0.14, type.width / 2);
+      }
       ctx.restore();
     }
   }

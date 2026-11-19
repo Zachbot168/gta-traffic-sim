@@ -3,11 +3,17 @@
  * and says how to frame it, so any shot can be recalled and replays identically.
  * No DOM in here; the headless frame renderer uses the same presets.
  */
+import { Chase, COP_LABELS, COP_STRATEGIES, FLEE_LABELS, FLEE_STRATEGIES, type ChaseConfig } from '../sim/chase';
 import { generateCity, type CityMap, type Scale } from '../sim/mapgen';
+import { CAR_SPECS, evalCurve, PERFORMANCE } from '../sim/perf';
 import { Rng } from '../sim/rng';
 import { routeFull } from '../sim/route';
 import { World, type WorldConfig } from '../sim/world';
+export { COP_STRATEGIES, FLEE_STRATEGIES };
+import { SERIES_COLORS, type ChartSpec } from '../render/charts';
 import type { Overlays, RouteDemo } from '../render/render';
+import chaseResults from './chase-results.json';
+import routingBench from './routing-bench.json';
 
 export const MAP_SEED = 1;
 export const WORLD_SEED = 42;
@@ -26,6 +32,9 @@ export interface Scene {
   demo: RouteDemo | null;
   /** Nodes revealed per second while a route search replays. */
   demoRate: number;
+  chase: Chase | null;
+  /** Result panels drawn over the city. */
+  charts: ChartSpec[] | null;
 }
 
 export interface Stage {
@@ -34,7 +43,7 @@ export interface Stage {
   title: string;
   caption: string;
   scale: Scale;
-  build(map: CityMap): Omit<Scene, 'stage' | 'map'>;
+  build(map: CityMap): Omit<Scene, 'stage' | 'map' | 'chase' | 'charts'> & { chase?: Chase; charts?: ChartSpec[] };
 }
 
 const none: Overlays = { graph: false, coarse: false, bubble: false, spawns: false };
@@ -68,10 +77,10 @@ export function makeDemo(w: World, show: RouteDemo['show'], pick?: Rng): RouteDe
   };
 }
 
-const cityBubble = (spawn: 'radial' | 'path', pinned: boolean, framing: (map: CityMap) => Framing, show: Partial<Overlays>) => (map: CityMap) => {
+const cityBubble = (spawn: 'radial' | 'path', pinned: boolean, framing: (map: CityMap) => Framing, show: Partial<Overlays>, extra: Partial<WorldConfig> = {}) => (map: CityMap) => {
   // Ambient traffic: most cars wander, some are on a planned trip.
   // Scenes parked over the highway ramps run a little lighter so the ramps keep flowing.
-  const w = world(map, { spawn, routing: 'coarse', tripShare: 0.3, density: pinned ? 1.1 : 1.5 });
+  const w = world(map, { spawn, routing: 'coarse', tripShare: 0.3, density: pinned ? 1.1 : 1.5, ...extra });
   const hy = map.highwayY ?? 0;
   const cx = (map.bounds.minX + map.bounds.maxX) * 0.42;
   if (pinned) w.pinFocus(cx, hy);
@@ -186,6 +195,18 @@ export const STAGES: Stage[] = [
     },
   },
   {
+    key: '3d',
+    chapter: '3. The coarse graph',
+    title: 'The saving, measured',
+    caption: 'About 8.6 times less work at every city size. The gap is set by how many nodes sit between forks, not by how big the map is.',
+    scale: 'district',
+    build: (map) => {
+      const w = world(map, { routing: 'coarse' });
+      w.populate(200);
+      return { world: w, overlays: { ...none, coarse: true }, framing: { kind: 'fit' }, demo: null, demoRate: 0, charts: benchChart() };
+    },
+  },
+  {
     key: '4a',
     chapter: '4. The city is fake',
     title: 'A busy city',
@@ -217,7 +238,185 @@ export const STAGES: Stage[] = [
     scale: 'city',
     build: cityBubble('path', true, (map) => ({ kind: 'at', x: (map.bounds.minX + map.bounds.maxX) * 0.42, y: map.highwayY ?? 0, zoom: 1.15 }), { spawns: true }),
   },
+  {
+    key: '5a',
+    chapter: '5. Every driver is different',
+    title: 'Take each car to a test track',
+    caption: 'Dots are measurements from a physics model. Lines are the three-number curve that replaces it. Traffic only ever uses the curve.',
+    scale: 'district',
+    build: (map) => {
+      const w = world(map);
+      w.populate(120);
+      return { world: w, overlays: none, framing: { kind: 'fit' }, demo: null, demoRate: 0, charts: curveCharts() };
+    },
+  },
+  {
+    key: '5b',
+    chapter: '5. Every driver is different',
+    title: 'A dry day',
+    caption: 'Sports cars pull away, trucks lumber. Watch the average speed.',
+    scale: 'city',
+    build: cityBubble('path', false, () => ({ kind: 'follow', zoom: 2.2 }), {}),
+  },
+  {
+    key: '5c',
+    chapter: '5. Every driver is different',
+    title: 'Then it rains',
+    caption: 'Same city, same seed, wet-road curves. Everyone brakes earlier, corners slower, and leaves more room.',
+    scale: 'city',
+    build: cityBubble('path', false, () => ({ kind: 'follow', zoom: 2.2 }), {}, { weather: 'rain' }),
+  },
+  {
+    key: '6a',
+    chapter: '6. Five stars',
+    title: 'One star',
+    caption: 'Each officer sees a cone, blocked by buildings. Stay out of every cone until the timer runs out.',
+    scale: 'city',
+    build: cityChase({ stars: 1, flee: 'weave', cops: 'chase' }, 1.9),
+  },
+  {
+    key: '6b',
+    chapter: '6. Five stars',
+    title: 'Three stars',
+    caption: 'More units, they shoot, and half of them try to cut you off. The yellow ring is where they are searching.',
+    scale: 'city',
+    build: cityChase({ stars: 3, flee: 'run', cops: 'intercept' }, 1.6),
+  },
+  {
+    key: '6c',
+    chapter: '6. Five stars',
+    title: 'Five stars',
+    caption: 'Nine units, roadblocks ahead, and a helicopter that sees over buildings.',
+    scale: 'city',
+    build: cityChase({ stars: 5, flee: 'highway', cops: 'roadblock' }, 1.3),
+  },
+  {
+    key: '6d',
+    chapter: '6. Five stars',
+    title: 'Drive it yourself',
+    caption: 'Arrow keys: left and right pick your turn at the next junction, down brakes. On a phone use the Left, Straight and Right buttons.',
+    scale: 'city',
+    build: cityChase({ stars: 2, flee: 'manual', cops: 'intercept' }, 1.9),
+  },
+  {
+    key: '6e',
+    chapter: '6. Five stars',
+    title: 'The experiment',
+    caption: `${chaseResults.chases.toLocaleString('en-US')} simulated chases, every strategy run from the same starting points.`,
+    scale: 'city',
+    build: (map) => {
+      const w = world(map);
+      return { world: w, overlays: none, framing: { kind: 'fit' }, demo: null, demoRate: 0, charts: resultCharts() };
+    },
+  },
 ];
+
+function cityChase(config: Partial<ChaseConfig>, zoom: number) {
+  return (map: CityMap) => {
+    const scene = cityBubble('path', false, () => ({ kind: 'follow', zoom }), {}, { density: 1.2 })(map);
+    // Let traffic settle, then the crime is witnessed.
+    for (let i = 0; i < 90; i++) scene.world.step(1 / 30);
+    return { ...scene, chase: new Chase(scene.world, config) };
+  };
+}
+
+const pct = (v: number) => `${v}%`;
+
+function curveCharts(): ChartSpec[] {
+  const cars = [0, 1, 3];
+  const launch: ChartSpec = {
+    title: 'Full throttle from a standstill',
+    subtitle: 'Dry road. Speed reached after t seconds.',
+    xLabel: 'Seconds',
+    yLabel: 'Speed (m/s)',
+    xRange: [0, 40],
+    yRange: [0, 80],
+    xTicks: [0, 10, 20, 30, 40],
+    yTicks: [0, 20, 40, 60, 80],
+    series: cars.map((type, i) => {
+      const p = PERFORMANCE[type]!.dry;
+      const line: [number, number][] = [];
+      for (let t = 0; t <= 40; t += 1) line.push([t, Math.max(0, evalCurve(p.launch, t))]);
+      return {
+        label: CAR_SPECS[type]!.name,
+        color: SERIES_COLORS[i]!,
+        line,
+        dots: p.launchSamples.filter((_, k) => k % 4 === 0).map((s) => [s.x, s.y] as [number, number]),
+      };
+    }),
+  };
+  const sedan = PERFORMANCE[0]!;
+  const corner = (weather: 'dry' | 'rain', dashed: boolean) => {
+    const p = sedan[weather];
+    const line: [number, number][] = [];
+    for (let r = 5; r <= 150; r += 5) line.push([r, evalCurve(p.corner, r)]);
+    return { label: `sedan, ${weather}`, color: SERIES_COLORS[0]!, line, dashed, dots: p.cornerSamples.map((s) => [s.x, s.y] as [number, number]) };
+  };
+  const cornering: ChartSpec = {
+    title: 'Fastest speed through a corner',
+    subtitle: 'Same car, dry road against wet road.',
+    xLabel: 'Corner radius (m)',
+    yLabel: 'Speed (m/s)',
+    xRange: [0, 150],
+    yRange: [0, 40],
+    xTicks: [0, 50, 100, 150],
+    yTicks: [0, 10, 20, 30, 40],
+    series: [corner('dry', false), corner('rain', true)],
+  };
+  return [launch, cornering];
+}
+
+function resultCharts(): ChartSpec[] {
+  const base = {
+    xLabel: 'Wanted level (stars)',
+    yLabel: 'Chases escaped',
+    xRange: [0.7, 5.3] as [number, number],
+    yRange: [0, 100] as [number, number],
+    xTicks: [1, 2, 3, 4, 5],
+    yTicks: [0, 25, 50, 75, 100],
+    yFormat: pct,
+  };
+  const points = (rates: number[]): [number, number][] => rates.map((r, i) => [i + 1, r]);
+  const flee = chaseResults.escapeRateByFlee as Record<string, number[]>;
+  const cops = chaseResults.escapeRateByCops as Record<string, number[]>;
+  return [
+    {
+      ...base,
+      title: 'Which escape strategy works?',
+      subtitle: `${chaseResults.samplesPerPoint.byFlee} chases per point.`,
+      series: FLEE_STRATEGIES.map((f, i) => ({ label: FLEE_LABELS[f], color: SERIES_COLORS[i]!, line: points(flee[f]!) })),
+    },
+    {
+      ...base,
+      title: 'Which police tactic works?',
+      subtitle: `${chaseResults.samplesPerPoint.byCops} chases per point. Lower is better for the police.`,
+      series: COP_STRATEGIES.map((c, i) => ({ label: COP_LABELS[c], color: SERIES_COLORS[i]!, line: points(cops[c]!) })),
+    },
+  ];
+}
+
+/** Chapter 3 payoff chart: search work on each graph as the city grows. */
+function benchChart(): ChartSpec[] {
+  const max = routingBench[routingBench.length - 1]!;
+  return [
+    {
+      title: 'Work per trip as the city grows',
+      subtitle: 'Average road nodes searched, 400 random trips per city size.',
+      xLabel: 'Intersections in the city',
+      yLabel: 'Nodes searched',
+      xRange: [0, max.intersections],
+      yRange: [0, 8000],
+      xTicks: [0, 1000, 2000, 3000, 4000],
+      yTicks: [0, 2000, 4000, 6000, 8000],
+      xFormat: (v) => v.toLocaleString('en-US'),
+      yFormat: (v) => v.toLocaleString('en-US'),
+      series: [
+        { label: 'Full graph', color: SERIES_COLORS[0]!, line: routingBench.map((r) => [r.intersections, r.searchedFull]) },
+        { label: 'Coarse graph', color: SERIES_COLORS[1]!, line: routingBench.map((r) => [r.intersections, r.searchedCoarse]) },
+      ],
+    },
+  ];
+}
 
 const mapCache = new Map<Scale, CityMap>();
 
@@ -227,5 +426,5 @@ export function buildScene(stage: Stage): Scene {
     map = generateCity(stage.scale, MAP_SEED);
     mapCache.set(stage.scale, map);
   }
-  return { stage, map, ...stage.build(map) };
+  return { chase: null, charts: null, stage, map, ...stage.build(map) };
 }

@@ -80,3 +80,18 @@ body.clean #hud, body.clean #bar { display: none; }
   #hud .title { font-size: 16px; }
   #bar button .k { display: none; }
 }
+
+#tip {
+  position: fixed;
+  display: none;
+  max-width: 240px;
+  padding: 6px 9px;
+  background: #1a1f2b;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  color: #f0efec;
+  font-size: 12.5px;
+  pointer-events: none;
+  z-index: 5;
+}
+#bar .drive button { flex: 1 0 auto; min-height: 44px; }

@@ -3,6 +3,7 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { buildScene, STAGES } from '../src/app/stages';
+import { drawChart, layoutCharts } from '../src/render/charts';
 import { fitCamera, Renderer, type Camera } from '../src/render/render';
 
 const W = 1280;
@@ -26,8 +27,12 @@ for (const stage of STAGES) {
 
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d') as unknown as CanvasRenderingContext2D;
-  new Renderer(scene.map, scene.world.coarse).draw(ctx, W, H, cam, scene.world, scene.overlays, scene.demo);
+  new Renderer(scene.map, scene.world.coarse).draw(ctx, W, H, cam, scene.world, scene.overlays, scene.demo, scene.chase);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (scene.charts) {
+    const rects = layoutCharts(scene.charts.length, W, H, 0, 0);
+    scene.charts.forEach((chart, i) => drawChart(ctx, rects[i]!, chart));
+  }
   ctx.fillStyle = '#ffffff';
   ctx.font = '600 20px sans-serif';
   ctx.textAlign = 'left';
