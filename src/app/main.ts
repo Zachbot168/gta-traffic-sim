@@ -47,7 +47,7 @@ function loadStage(index: number): void {
 /** Keep the current stage in the address bar so a shot can be reopened directly. */
 function rememberStage(): void {
   try {
-    history.replaceState(null, '', `#${scene.stage.key}${document.body.classList.contains('clean') ? '&clean' : ''}`);
+    history.replaceState(null, '', `#${scene.stage.key}${document.body.classList.contains('clean') ? '-clean' : ''}`);
   } catch {
     // Some embedded viewers don't allow touching the address bar. The sim works without it.
   }
@@ -367,7 +367,7 @@ window.addEventListener('resize', () => {
 });
 
 resize();
-const wanted = location.hash.replace('#', '').split('&');
+const wanted = location.hash.replace('#', '').split('-');
 if (wanted.includes('clean')) document.body.classList.add('clean');
 loadStage(Math.max(0, STAGES.findIndex((s) => s.key === wanted[0])));
 requestAnimationFrame(tick);

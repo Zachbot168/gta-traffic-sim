@@ -49,7 +49,7 @@ npm run health           # quick traffic health numbers
 | R, T | New route, switch search view |
 | H | Hide panels for recording (Esc or double-click to bring them back) |
 
-Drag to pan, scroll or pinch to zoom. The stage is kept in the URL (`#3b`, or `#3b&clean` with panels hidden), so a shot can be reopened directly.
+Drag to pan, scroll or pinch to zoom. The stage is kept in the URL (`#3b`, or `#3b-clean` with panels hidden), so a shot can be reopened directly.
 
 ## Reproducibility
 
