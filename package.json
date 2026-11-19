@@ -11,7 +11,8 @@
     "frames": "tsx scripts/frames.ts",
     "bench:routing": "tsx scripts/bench-routing.ts",
     "health": "tsx scripts/diag.ts",
-    "health:bubble": "tsx scripts/diag2.ts"
+    "health:bubble": "tsx scripts/diag2.ts",
+    "chases": "tsx scripts/batch-chases.ts"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.1.1",

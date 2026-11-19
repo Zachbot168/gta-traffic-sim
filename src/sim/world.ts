@@ -6,6 +6,7 @@
 import { CoarseGraph } from './coarse';
 import { ROAD_SPECS, type RoadGraph } from './graph';
 import type { CityMap } from './mapgen';
+import { accelAt, evalCurve, GRIP, PERFORMANCE, type Performance, type Weather } from './perf';
 import { Rng } from './rng';
 import { routeFull, type Route } from './route';
 
@@ -18,8 +19,6 @@ export interface VehicleType {
   name: string;
   length: number;
   width: number;
-  /** Peak acceleration, m/s^2. */
-  accel: number;
   /** Multiplier on the speed limit this kind of vehicle cruises at. */
   pace: number;
   /** Relative share of traffic. */
@@ -27,16 +26,16 @@ export interface VehicleType {
 }
 
 export const VEHICLE_TYPES: VehicleType[] = [
-  { name: 'sedan', length: 4.6, width: 1.9, accel: 2.2, pace: 1.0, share: 6 },
-  { name: 'sports', length: 4.3, width: 1.9, accel: 3.4, pace: 1.15, share: 1 },
-  { name: 'van', length: 5.4, width: 2.1, accel: 1.7, pace: 0.93, share: 2 },
-  { name: 'truck', length: 8.5, width: 2.5, accel: 1.1, pace: 0.85, share: 1 },
+  { name: 'sedan', length: 4.6, width: 1.9, pace: 1.0, share: 6 },
+  { name: 'sports', length: 4.3, width: 1.9, pace: 1.15, share: 1 },
+  { name: 'van', length: 5.4, width: 2.1, pace: 0.93, share: 2 },
+  { name: 'truck', length: 8.5, width: 2.5, pace: 0.85, share: 1 },
 ];
 
 export interface Vehicle {
   id: number;
   type: number;
-  kind: 'civ' | 'hero';
+  kind: 'civ' | 'hero' | 'cop';
   /** Colour slot, picked once so a car keeps its paint. */
   paint: number;
   /** Personal speed preference, around 1. */
@@ -64,6 +63,21 @@ export interface Vehicle {
   /** Seconds spent at a standstill. */
   stuck: number;
 
+  /**
+   * Emergency driving: runs junctions, uses the car's full performance, and picks
+   * whichever lane (including the oncoming side) has the most room.
+   */
+  emergency: boolean;
+  /** Lane picked while driving as an emergency vehicle. 0+ is our side, negative is the oncoming side. */
+  laneChoice: number | null;
+  laneTimer: number;
+  /** Multiplier on the speed limit while driving as an emergency vehicle. */
+  pace: number;
+  /** True while the driver wants to pull up and sit still. */
+  halt: boolean;
+  /** Sideways offset from the centre line, metres. Positive is our side of the road. */
+  lat: number;
+
   x: number;
   y: number;
   heading: number;
@@ -85,6 +99,14 @@ export interface WorldConfig {
   routesPerStep: number;
   /** Share of cars that plan trips when routing is on. The rest wander. */
   tripShare: number;
+  weather: Weather;
+}
+
+/** The police system plugs in here, so the traffic core doesn't need to know how it works. */
+export interface ChaseHook {
+  update(dt: number): void;
+  /** Next link for a police car or the fleeing hero, or null to fall back to normal driving. */
+  chooseNext(v: Vehicle): number | null;
 }
 
 export const DEFAULT_CONFIG: WorldConfig = {
@@ -96,6 +118,7 @@ export const DEFAULT_CONFIG: WorldConfig = {
   despawn: 440,
   routesPerStep: 6,
   tripShare: 1,
+  weather: 'dry',
 };
 
 /**
@@ -121,6 +144,8 @@ const DT_MAX = 0.1;
 const HEADWAY = 1.2;
 const MIN_GAP = 2.5;
 const COMFORT_BRAKE = 2.6;
+/** Ordinary drivers use about half of what the car can do. */
+const CIVIL_THROTTLE = 0.5;
 /** Longest green while another approach is waiting. Bigger roads get longer. */
 const MAX_GREEN: Record<string, number> = { highway: 14, arterial: 14, street: 6, ramp: 6 };
 const GREEN_HOLD = 0.2;
@@ -133,8 +158,6 @@ const STUCK_LIMIT = 25;
 /** A side-road driver pulls out only if no main-road car will arrive within this many seconds. */
 const GAP_TIME = 1.5;
 const CLASS_RANK: Record<string, number> = { highway: 3, arterial: 2, street: 1, ramp: 0 };
-const GRAVITY = 9.81;
-const GRIP = 0.7;
 
 export class World {
   readonly graph: RoadGraph;
@@ -152,10 +175,13 @@ export class World {
    */
   focus: { x: number; y: number } | null = null;
   private pinned = false;
+  chase: ChaseHook | null = null;
+  /** Links closed by a police roadblock. */
+  readonly blocked = new Set<number>();
 
   private nextId = 1;
   /** Vehicles on each link in each direction, sorted by position. Index is link*2 + (dir>0 ? 1 : 0). */
-  private lanes: Vehicle[][];
+  lanes: Vehicle[][];
   private touched: number[] = [];
 
   // Junction right-of-way: which phase currently has the green at each node.
@@ -218,14 +244,14 @@ export class World {
   /** Put a vehicle on a link. The caller checks the spot is free. */
   addVehicle(link: number, dir: 1 | -1, s: number, kind: Vehicle['kind'] = 'civ', speed = 0): Vehicle {
     const l = this.graph.links[link]!;
-    const type = kind === 'hero' ? 1 : this.rng.pick(this.typeBag);
+    const type = kind === 'hero' ? 1 : kind === 'cop' ? 0 : this.rng.pick(this.typeBag);
     const v: Vehicle = {
       id: this.nextId++,
       type,
       kind,
       paint: this.rng.int(8),
-      driver: kind === 'hero' ? 1 : this.rng.range(0.88, 1.1),
-      planner: kind === 'hero' || this.rng.chance(this.config.tripShare),
+      driver: kind === 'civ' ? this.rng.range(0.88, 1.1) : 1,
+      planner: kind !== 'civ' || this.rng.chance(this.config.tripShare),
       link,
       dir,
       s,
@@ -237,6 +263,12 @@ export class World {
       routeAt: 0,
       cleared: -1,
       stuck: 0,
+      emergency: false,
+      laneChoice: null,
+      laneTimer: 0,
+      pace: 1.4,
+      halt: false,
+      lat: 0,
       x: 0,
       y: 0,
       heading: 0,
@@ -262,6 +294,23 @@ export class World {
       this.indexLanes();
       count--;
     }
+  }
+
+  /** Turn a vehicle round where it stands, onto the other side of the road. */
+  reverse(v: Vehicle): void {
+    const link = this.graph.links[v.link]!;
+    v.dir = v.dir > 0 ? -1 : 1;
+    v.s = Math.max(0, link.length - v.s);
+    const from = v.from;
+    v.from = v.to;
+    v.to = from;
+    v.next = -1;
+    v.route = null;
+    v.cleared = -1;
+    v.v = 0;
+    v.lat = -v.lat;
+    v.heading += Math.PI;
+    if (v.laneChoice !== null) v.laneChoice = 0;
   }
 
   /** Remove a number of civilian cars, newest first. */
@@ -314,7 +363,7 @@ export class World {
     this.indexLanes();
 
     const accel = new Float64Array(this.vehicles.length);
-    for (let i = 0; i < this.vehicles.length; i++) accel[i] = this.drive(this.vehicles[i]!);
+    for (let i = 0; i < this.vehicles.length; i++) accel[i] = this.drive(this.vehicles[i]!, dt);
 
     let died = false;
     for (let i = 0; i < this.vehicles.length; i++) {
@@ -328,6 +377,7 @@ export class World {
     }
 
     this.releaseJunctions();
+    this.chase?.update(dt);
     if (this.hero && !this.pinned) this.focus = { x: this.hero.x, y: this.hero.y };
     const focus = this.focus;
 
@@ -365,13 +415,17 @@ export class World {
   }
 
   /** Work out this vehicle's acceleration for the step (intelligent driver model). */
-  private drive(v: Vehicle): number {
+  private drive(v: Vehicle, dt: number): number {
     const { graph } = this;
     const link = graph.links[v.link]!;
     const type = VEHICLE_TYPES[v.type]!;
     if (v.next === -1) this.chooseNext(v);
 
     const toEnd = link.length - v.s;
+    const grip = this.grip;
+    const perf = this.perf(v);
+    if (v.emergency) return this.driveEmergency(v, perf, toEnd, dt);
+    if (v.laneChoice !== null) v.laneChoice = null;
     let gap = Infinity;
     let leadSpeed = 0;
 
@@ -381,15 +435,27 @@ export class World {
       gap = ahead.s - VEHICLE_TYPES[ahead.type]!.length - v.s;
       leadSpeed = ahead.v;
     }
+    if (this.blocked.has(v.link) && v.s < link.length * 0.5 - 3) {
+      gap = Math.min(gap, link.length * 0.5 - 3 - v.s);
+      leadSpeed = gap === Infinity ? leadSpeed : Math.min(leadSpeed, 0);
+    }
     if (v.next >= 0 && v.next !== v.link) {
       // Also look down the road we are about to take, far enough to stop for whatever is there.
       // (The car ahead of us on this link may be going somewhere else.)
-      const horizon = (v.v * v.v) / (2 * COMFORT_BRAKE) + 25;
+      const horizon = (v.v * v.v) / (2 * COMFORT_BRAKE * grip) + 25;
       let link = v.next;
       let node = v.to;
       let dist = toEnd;
       let step = v.routeAt + 1;
       while (dist < horizon && dist < gap) {
+        if (this.blocked.has(link)) {
+          const g = dist + graph.links[link]!.length * 0.5 - 3;
+          if (g < gap) {
+            gap = g;
+            leadSpeed = 0;
+          }
+          break;
+        }
         const dir = this.dirFrom(link, node);
         const lane = this.laneOn(v, link);
         let first: Vehicle | undefined;
@@ -430,7 +496,7 @@ export class World {
     // Junctions: ask for right-of-way in time to stop if refused.
     if (graph.degree(v.to) >= 3 && v.cleared !== v.to) {
       const stopLine = toEnd - 3;
-      const commit = (v.v * v.v) / (2 * FIRM_BRAKE) + 6;
+      const commit = (v.v * v.v) / (2 * FIRM_BRAKE * grip) + 6;
       if (stopLine < commit) {
         if (this.requestGreen(v)) v.cleared = v.to;
         else if (stopLine < gap) {
@@ -446,19 +512,40 @@ export class World {
       else this.greenUsed[v.to] = this.time;
     }
 
-    // Desired speed: the limit, the driver, and slowing for the turn ahead.
-    let desired = ROAD_SPECS[link.cls].speed * type.pace * v.driver;
+    // Desired speed: the limit, the driver, the weather, and slowing for the turn ahead.
+    // On a wet road drivers ease off so that their stopping distance stays about the same.
+    const brake = COMFORT_BRAKE * grip;
+    let desired = v.halt ? 0 : ROAD_SPECS[link.cls].speed * type.pace * v.driver * Math.sqrt(grip);
     if (v.next >= 0) {
       const corner = this.cornerSpeed(v);
-      if (corner < desired) desired = Math.min(desired, Math.sqrt(corner * corner + 2 * COMFORT_BRAKE * toEnd));
+      if (corner < desired) desired = Math.min(desired, Math.sqrt(corner * corner + 2 * brake * toEnd));
     }
+    return this.follow(v, accelAt(perf, v.v) * CIVIL_THROTTLE, accelAt(perf, 0) * CIVIL_THROTTLE, brake, desired, gap, leadSpeed, HEADWAY / Math.sqrt(grip), MIN_GAP);
+  }
 
-    const free = 1 - Math.pow(v.v / Math.max(desired, 0.1), 4);
-    if (gap === Infinity) return Math.max(-9, type.accel * free);
+  /** Intelligent driver model: speed up towards the desired speed, back off from whatever is ahead. */
+  private follow(v: Vehicle, accel: number, launch: number, brake: number, desired: number, gap: number, leadSpeed: number, headway: number, minGap: number): number {
+    if (desired < 0.1) return v.v > 0 ? -Math.min(brake * 1.5, v.v * 4 + 0.5) : 0;
+    const free = 1 - Math.pow(v.v / desired, 4);
+    if (gap === Infinity) return Math.max(-9, accel * free);
     const closing = v.v - leadSpeed;
-    const wanted = MIN_GAP + Math.max(0, v.v * HEADWAY + (v.v * closing) / (2 * Math.sqrt(type.accel * COMFORT_BRAKE)));
-    const g = Math.max(gap, 0.01);
-    return Math.max(-9, type.accel * (free - (wanted / g) ** 2));
+    const wanted = minGap + Math.max(0, v.v * headway + (v.v * closing) / (2 * Math.sqrt(launch * brake)));
+    return Math.max(-9, accel * (free - (wanted / Math.max(gap, 0.01)) ** 2));
+  }
+
+  /** Police cars and the fleeing hero: flat out, through junctions, in whichever lane is clearest. */
+  private driveEmergency(v: Vehicle, perf: Performance, toEnd: number, dt: number): number {
+    const link = this.graph.links[v.link]!;
+    const { gap, speed } = this.pickLane(v, dt);
+    v.cleared = v.to;
+    const brake = FIRM_BRAKE * this.grip;
+    let desired = v.halt ? 0 : Math.min(ROAD_SPECS[link.cls].speed * v.pace * Math.sqrt(this.grip), perf.launch.a * 0.9);
+    if (v.next >= 0) {
+      // Emergency drivers take corners at the limit rather than at a comfortable speed.
+      const corner = this.cornerSpeed(v) * 1.25;
+      if (corner < desired) desired = Math.min(desired, Math.sqrt(corner * corner + 2 * brake * toEnd));
+    }
+    return this.follow(v, accelAt(perf, v.v), accelAt(perf, 0), brake, desired, gap, speed, 0.5, 2);
   }
 
   /** Move a vehicle across node boundaries after its position has been integrated. */
@@ -469,7 +556,7 @@ export class World {
       if (v.s < link.length) return;
 
       // Never roll through a junction without right-of-way.
-      if (graph.degree(v.to) >= 3 && v.cleared !== v.to) {
+      if (!v.emergency && graph.degree(v.to) >= 3 && v.cleared !== v.to) {
         v.s = link.length - 0.01;
         v.v = 0;
         return;
@@ -508,6 +595,14 @@ export class World {
   private chooseNext(v: Vehicle): void {
     const { graph, rng, config } = this;
     const node = v.to;
+
+    if (this.chase && v.kind !== 'civ') {
+      const choice = this.chase.chooseNext(v);
+      if (choice !== null) {
+        v.next = choice;
+        return;
+      }
+    }
 
     if ((config.routing === 'wander' || !v.planner) && v.route) v.route = null;
     if (config.routing !== 'wander' && v.planner) {
@@ -583,7 +678,7 @@ export class World {
     const turn = Math.abs(angleDiff(Math.atan2(c.y - b.y, c.x - b.x), Math.atan2(b.y - a.y, b.x - a.x)));
     if (turn < 0.25) return Infinity;
     const radius = 9 / Math.tan(Math.min(turn, 3) / 2);
-    return Math.max(2.5, Math.sqrt(GRIP * GRAVITY * radius));
+    return Math.max(2.5, evalCurve(this.perf(v).corner, radius));
   }
 
   // ---------------------------------------------------------------- junctions
@@ -856,8 +951,114 @@ export class World {
   // ---------------------------------------------------------------- helpers
 
   /** Which lane a vehicle uses on a given link. Fixed per vehicle, so there is no lane changing. */
-  private laneOn(v: Vehicle, link: number): number {
-    return v.id % ROAD_SPECS[this.graph.links[link]!.cls].lanes;
+  laneOn(v: Vehicle, link: number): number {
+    const lanes = ROAD_SPECS[this.graph.links[link]!.cls].lanes;
+    if (v.laneChoice === null) return v.id % lanes;
+    // On the oncoming side a vehicle is in none of this direction's lanes.
+    return v.laneChoice >= 0 ? Math.min(v.laneChoice, lanes - 1) : -1;
+  }
+
+  /** How much grip the road has compared with a dry day. */
+  private get grip(): number {
+    return GRIP[this.config.weather] / GRIP.dry;
+  }
+
+  private perf(v: Vehicle): Performance {
+    return PERFORMANCE[v.type]![this.config.weather];
+  }
+
+  /**
+   * Nearest obstacle ahead of an emergency vehicle if it drove in the given lane.
+   * A negative lane means the oncoming side, where the obstacle is closing on us.
+   */
+  private scanLane(v: Vehicle, choice: number): { gap: number; speed: number } {
+    const { graph } = this;
+    const horizon = (v.v * v.v) / (2 * FIRM_BRAKE * this.grip) + 35;
+    let gap = Infinity;
+    let speed = 0;
+    let link = v.link;
+    let dir: 1 | -1 = v.dir;
+    let node = v.to;
+    let dist = -v.s; // distance from our front bumper to the start of `link`
+    let step = v.routeAt;
+    for (let hop = 0; hop < 40; hop++) {
+      const l = graph.links[link]!;
+      const lanes = ROAD_SPECS[l.cls].lanes;
+      // No crossing the divider on the highway.
+      if (choice < 0 && l.cls === 'highway') return { gap: Math.max(0.01, dist), speed: 0 };
+      if (this.blocked.has(link)) {
+        const g = dist + l.length * 0.5 - 3;
+        if (g > -2 && g < gap) {
+          gap = Math.max(0.01, g);
+          speed = 0;
+        }
+      }
+      if (choice >= 0) {
+        const lane = Math.min(choice, lanes - 1);
+        for (const o of this.lanes[this.laneKey(link, dir)]!) {
+          if (o === v || dist + o.s <= 0 || this.laneOn(o, link) !== lane) continue;
+          const g = dist + o.s - VEHICLE_TYPES[o.type]!.length;
+          if (g < gap) {
+            gap = Math.max(0.01, g);
+            speed = o.v;
+          }
+        }
+      } else {
+        const lane = Math.min(-1 - choice, lanes - 1);
+        for (const o of this.lanes[this.laneKey(link, -dir)]!) {
+          const front = l.length - o.s;
+          if (dist + front <= 0 || this.laneOn(o, link) !== lane) continue;
+          const g = dist + front;
+          if (g < gap) {
+            gap = Math.max(0.01, g);
+            speed = -o.v;
+          }
+        }
+      }
+      if (gap < Infinity) break;
+      dist += l.length;
+      if (dist > horizon) break;
+
+      let next: number;
+      if (hop === 0) next = v.next;
+      else {
+        const around = graph.adj[node]!;
+        if (around.length === 2) next = around[0] === link ? around[1]! : around[0]!;
+        else if (v.route && v.route[step] === node && step + 1 < v.route.length) next = graph.linkBetween(node, v.route[step + 1]!);
+        else break;
+      }
+      if (next < 0 || next === link) break;
+      dir = this.dirFrom(next, node);
+      link = next;
+      node = graph.other(link, node);
+      step++;
+    }
+    return { gap, speed };
+  }
+
+  /** Pick the lane with the most room, a few times a second. This is how chases thread through traffic. */
+  private pickLane(v: Vehicle, dt: number): { gap: number; speed: number } {
+    const lanes = ROAD_SPECS[this.graph.links[v.link]!.cls].lanes;
+    if (v.laneChoice === null) v.laneChoice = v.id % lanes;
+    v.laneTimer -= dt;
+    if (v.laneTimer <= 0) {
+      v.laneTimer = 0.3;
+      const pace = Math.max(v.v, 6);
+      let best = v.laneChoice;
+      let bestScore = -Infinity;
+      for (let c = lanes - 1; c >= -lanes; c--) {
+        const r = this.scanLane(v, c);
+        // How far we would actually get before meeting the obstacle.
+        const reach = Math.min(140, (r.gap * pace) / Math.max(1, pace - Math.min(r.speed, pace - 1)));
+        const score = reach - (c < 0 ? 14 : 0) - (c === v.laneChoice ? 0 : 5);
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      }
+      v.laneChoice = best;
+    }
+    return this.scanLane(v, v.laneChoice);
   }
 
   /**
@@ -886,12 +1087,12 @@ export class World {
     return undefined;
   }
 
-  private laneKey(link: number, dir: number): number {
+  laneKey(link: number, dir: number): number {
     return link * 2 + (dir > 0 ? 1 : 0);
   }
 
   /** Travel direction on a link when entering it from a given node. */
-  private dirFrom(link: number, node: number): 1 | -1 {
+  dirFrom(link: number, node: number): 1 | -1 {
     return this.graph.links[link]!.a === node ? 1 : -1;
   }
 
@@ -935,7 +1136,7 @@ export class World {
   }
 
   /** True if no vehicle in the same direction is within `room` metres of position s. */
-  private isFree(link: number, dir: number, s: number, room: number): boolean {
+  isFree(link: number, dir: number, s: number, room: number): boolean {
     for (const v of this.lanes[this.laneKey(link, dir)]!) {
       if (Math.abs(v.s - s) < room) return false;
     }
@@ -968,10 +1169,14 @@ export class World {
     const dy = (b.y - a.y) / (link.length || 1);
     const spec = ROAD_SPECS[link.cls];
     const laneWidth = spec.width / 2 / spec.lanes;
-    const offset = ((v.id % spec.lanes) + 0.5) * laneWidth;
+    let wanted = ((v.id % spec.lanes) + 0.5) * laneWidth;
+    if (v.laneChoice !== null) {
+      wanted = v.laneChoice >= 0 ? (Math.min(v.laneChoice, spec.lanes - 1) + 0.5) * laneWidth : -(Math.min(-1 - v.laneChoice, spec.lanes - 1) + 0.5) * laneWidth;
+    }
+    v.lat = snap ? wanted : v.lat + (wanted - v.lat) * Math.min(1, dt * 5);
     // Drive on the right: shift to the right-hand side of the direction of travel.
-    v.x = a.x + (b.x - a.x) * t - dy * offset;
-    v.y = a.y + (b.y - a.y) * t + dx * offset;
+    v.x = a.x + (b.x - a.x) * t - dy * v.lat;
+    v.y = a.y + (b.y - a.y) * t + dx * v.lat;
     v.level = link.level;
     const target = Math.atan2(dy, dx);
     if (snap) v.heading = target;
