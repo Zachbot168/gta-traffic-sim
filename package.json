@@ -9,11 +9,15 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "frames": "tsx scripts/frames.ts",
-    "bench:routing": "tsx scripts/bench-routing.ts"
+    "bench:routing": "tsx scripts/bench-routing.ts",
+    "health": "tsx scripts/diag.ts",
+    "health:bubble": "tsx scripts/diag2.ts"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.1.1",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^26.6.6",
+    "jsdom": "^31.0.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",

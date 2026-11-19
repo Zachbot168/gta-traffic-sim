@@ -5,7 +5,7 @@ const DT = 1 / 30;
 
 function run(mode: SpawnMode, pinned: boolean, seed: number, density = 1) {
   const map = generateCity('city', 1);
-  const w = new World(map, seed, { spawn: mode, routing: 'coarse', density });
+  const w = new World(map, seed, { spawn: mode, routing: 'coarse', density, tripShare: 0.3 });
   const hy = map.highwayY!;
   if (pinned) w.pinFocus(1700, hy);
   else w.addHero(1700, hy - 250);
@@ -33,10 +33,10 @@ function run(mode: SpawnMode, pinned: boolean, seed: number, density = 1) {
   console.log(`${mode} ${pinned ? 'pinned' : 'follow'} seed=${seed} d=${density}: cars@meanSpeed per minute: ${series.join(' ')}`);
   console.log(`   avg ground cars within 60m of highway=${(near / n).toFixed(1)} elsewhere=${(far / n).toFixed(1)} on highway=${(hw / n).toFixed(1)}`);
 }
-for (const seed of [42, 7, 3]) {
-  run('radial', true, seed);
-  run('path', true, seed);
+for (const seed of [42, 7]) {
+  run('radial', true, seed, 1.5);
+  run('path', true, seed, 1.5);
 }
-run('path', false, 42);
-run('path', false, 7);
+run('path', false, 42, 1.5);
 run('path', false, 7, 1.5);
+run('path', false, 7, 2.2);

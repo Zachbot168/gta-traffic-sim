@@ -41,6 +41,8 @@ export interface Vehicle {
   paint: number;
   /** Personal speed preference, around 1. */
   driver: number;
+  /** Planners drive to a destination. The rest just wander, like ambient traffic. */
+  planner: boolean;
 
   link: number;
   /** +1 travels a to b, -1 travels b to a. */
@@ -81,6 +83,8 @@ export interface WorldConfig {
   despawn: number;
   /** Most new routes computed per step, so a routing change doesn't freeze a frame. */
   routesPerStep: number;
+  /** Share of cars that plan trips when routing is on. The rest wander. */
+  tripShare: number;
 }
 
 export const DEFAULT_CONFIG: WorldConfig = {
@@ -91,7 +95,19 @@ export const DEFAULT_CONFIG: WorldConfig = {
   spawnOuter: 380,
   despawn: 440,
   routesPerStep: 6,
+  tripShare: 1,
 };
+
+/**
+ * A spawner decision worth drawing: either it added a car, or the straight-line
+ * check refused a spot that the along-the-road check would have filled.
+ */
+export interface SpawnEvent {
+  x: number;
+  y: number;
+  time: number;
+  kind: 'spawned' | 'wronglyFull';
+}
 
 export interface WorldStats {
   routes: number;
@@ -110,11 +126,12 @@ const MAX_GREEN: Record<string, number> = { highway: 14, arterial: 14, street: 6
 const GREEN_HOLD = 0.2;
 /** Braking rate a driver is willing to use to stop for a junction they were refused at. */
 const FIRM_BRAKE = 4.5;
-const SPAWN_WINDOW = 60;
+const SPAWN_WINDOW = 80;
+const SPAWN_LOG_SIZE = 900;
 const SPAWN_TRIES = 14;
 const STUCK_LIMIT = 25;
 /** A side-road driver pulls out only if no main-road car will arrive within this many seconds. */
-const GAP_TIME = 2.8;
+const GAP_TIME = 1.5;
 const CLASS_RANK: Record<string, number> = { highway: 3, arterial: 2, street: 1, ramp: 0 };
 const GRAVITY = 9.81;
 const GRIP = 0.7;
@@ -153,15 +170,22 @@ export class World {
   private greenWantedAt: Float64Array;
   private greenLast: Int32Array;
   private activeJunctions = new Set<number>();
+  /**
+   * Who is about to turn into each lane of each link. Stops two cars from
+   * different approaches from merging into the same lane at the same moment.
+   */
+  private entryClaims = new Map<number, { by: Vehicle; source: number; node: number }>();
 
   // Spatial hash of vehicle positions, for radial density checks.
   private cell = 64;
   private buckets = new Map<number, Vehicle[]>();
 
+  /** Recent spawner decisions, newest last. Purely for drawing; the sim never reads it. */
+  readonly spawnLog: SpawnEvent[] = [];
   private ring: number[] = [];
   private ringAt = -1;
-  /** How many cars the whole bubble should hold if every road met its target. */
-  private bubbleTarget = 0;
+  /** How many cars the bubble should hold if every road met its target: [streets, highway]. */
+  private bubbleTarget: [number, number] = [0, 0];
   private typeBag: number[] = [];
   private routesThisStep = 0;
 
@@ -201,6 +225,7 @@ export class World {
       kind,
       paint: this.rng.int(8),
       driver: kind === 'hero' ? 1 : this.rng.range(0.88, 1.1),
+      planner: kind === 'hero' || this.rng.chance(this.config.tripShare),
       link,
       dir,
       s,
@@ -237,6 +262,16 @@ export class World {
       this.indexLanes();
       count--;
     }
+  }
+
+  /** Remove a number of civilian cars, newest first. */
+  removeVehicles(count: number): void {
+    for (let i = this.vehicles.length - 1; i >= 0 && count > 0; i--) {
+      if (this.vehicles[i]!.kind !== 'civ') continue;
+      this.vehicles[i]!.alive = false;
+      count--;
+    }
+    this.vehicles = this.vehicles.filter((v) => v.alive);
   }
 
   /** Create the hero car that the camera and the spawn bubble follow. */
@@ -316,13 +351,15 @@ export class World {
       this.indexLanes();
       this.indexBuckets();
       this.refreshRing();
-      // Never fill the streets past what the bubble should hold, so a jam can't snowball.
-      // The highway has no junctions to jam at, so it is always allowed to top up.
-      const full = this.vehicles.length >= this.bubbleTarget;
+      // A safety net: never fill far past what the bubble should hold, so a jam can't snowball.
+      // Streets and the highway are capped separately so one can't starve the other.
+      const count: [number, number] = [0, 0];
+      for (const v of this.vehicles) count[this.graph.links[v.link]!.cls === 'highway' ? 1 : 0]++;
       for (let i = 0; i < SPAWN_TRIES && this.ring.length > 0; i++) {
         const link = this.rng.pick(this.ring);
-        if (full && this.graph.links[link]!.cls !== 'highway') continue;
-        this.trySpawn(link, 0.85);
+        const group = this.graph.links[link]!.cls === 'highway' ? 1 : 0;
+        if (count[group] >= this.bubbleTarget[group] * 1.3) continue;
+        if (this.trySpawn(link, 0.85)) count[group]++;
       }
     }
   }
@@ -343,12 +380,50 @@ export class World {
     if (ahead) {
       gap = ahead.s - VEHICLE_TYPES[ahead.type]!.length - v.s;
       leadSpeed = ahead.v;
-    } else if (v.next >= 0) {
-      // Nobody ahead on this link: look at the tail of the next one.
+    }
+    if (v.next >= 0 && v.next !== v.link) {
+      // Also look down the road we are about to take, far enough to stop for whatever is there.
+      // (The car ahead of us on this link may be going somewhere else.)
+      const horizon = (v.v * v.v) / (2 * COMFORT_BRAKE) + 25;
+      let link = v.next;
+      let node = v.to;
+      let dist = toEnd;
+      let step = v.routeAt + 1;
+      while (dist < horizon && dist < gap) {
+        const dir = this.dirFrom(link, node);
+        const lane = this.laneOn(v, link);
+        let first: Vehicle | undefined;
+        for (const o of this.lanes[this.laneKey(link, dir)]!) {
+          if (o !== v && this.laneOn(o, link) === lane) {
+            first = o;
+            break;
+          }
+        }
+        if (first) {
+          const g = dist + first.s - VEHICLE_TYPES[first.type]!.length;
+          if (g < gap) {
+            gap = g;
+            leadSpeed = first.v;
+          }
+          break;
+        }
+        dist += graph.links[link]!.length;
+        node = graph.other(link, node);
+        // Keep going along a plain road, or along our planned route. Stop at a fork we haven't chosen at yet.
+        const around = graph.adj[node]!;
+        if (around.length === 2) link = around[0] === link ? around[1]! : around[0]!;
+        else if (v.route && v.route[step] === node && step + 1 < v.route.length) link = graph.linkBetween(node, v.route[step + 1]!);
+        else break;
+        step++;
+      }
+    } else if (v.next === v.link) {
       const first = this.firstOnNext(v);
       if (first) {
-        gap = toEnd + first.s - VEHICLE_TYPES[first.type]!.length;
-        leadSpeed = first.v;
+        const g = toEnd + first.s - VEHICLE_TYPES[first.type]!.length;
+        if (g < gap) {
+          gap = g;
+          leadSpeed = first.v;
+        }
       }
     }
 
@@ -434,8 +509,8 @@ export class World {
     const { graph, rng, config } = this;
     const node = v.to;
 
-    if (config.routing === 'wander' && v.route) v.route = null;
-    if (config.routing !== 'wander') {
+    if ((config.routing === 'wander' || !v.planner) && v.route) v.route = null;
+    if (config.routing !== 'wander' && v.planner) {
       const route = v.route;
       if (route && route[v.routeAt] === node && v.routeAt + 1 < route.length) {
         v.next = graph.linkBetween(node, route[v.routeAt + 1]!);
@@ -449,8 +524,8 @@ export class World {
           if (dest === node) continue;
           const r = this.findRoute(node, dest);
           if (!r.found || r.nodes.length < 2) continue;
-          // Prefer not to start a trip with a U-turn.
-          if (r.nodes[1] === v.from && attempt < 3 && graph.degree(node) > 1) continue;
+          // Never start a trip by turning round in the middle of the road.
+          if (r.nodes[1] === v.from && graph.degree(node) > 1) continue;
           v.route = r.nodes;
           v.routeAt = 0;
           v.next = graph.linkBetween(node, r.nodes[1]!);
@@ -466,7 +541,27 @@ export class World {
       v.next = v.kind === 'civ' && graph.nodes[node]!.edge && config.spawn !== 'off' ? -2 : v.link;
       return;
     }
-    v.next = rng.pick(options);
+    // Drivers mostly carry straight on, and mostly stay on the highway once they are on it.
+    const here = graph.links[v.link]!;
+    const a = graph.nodes[v.from]!;
+    const b = graph.nodes[node]!;
+    const heading = Math.atan2(b.y - a.y, b.x - a.x);
+    const weights = options.map((id) => {
+      const c = graph.nodes[graph.other(id, node)]!;
+      const straight = Math.abs(angleDiff(Math.atan2(c.y - b.y, c.x - b.x), heading)) < 0.5;
+      const sameRoad = graph.links[id]!.cls === here.cls;
+      return (straight ? 3 : 1) * (sameRoad && here.cls === 'highway' ? 4 : 1);
+    });
+    let roll = rng.next() * weights.reduce((sum, w) => sum + w, 0);
+    let choice = options.length - 1;
+    for (let i = 0; i < options.length; i++) {
+      roll -= weights[i]!;
+      if (roll < 0) {
+        choice = i;
+        break;
+      }
+    }
+    v.next = options[choice]!;
   }
 
   /** Route with whichever graph the config says, and record how much work it took. */
@@ -499,6 +594,24 @@ export class World {
    * waiting, the green is taken away after a few seconds.
    */
   private requestGreen(v: Vehicle): boolean {
+    if (v.next < 0 || v.next === v.link) return this.rightOfWay(v);
+    const node = v.to;
+    const nextDir = this.dirFrom(v.next, node);
+    const target = (this.laneKey(v.next, nextDir) << 2) | this.laneOn(v, v.next);
+    const source = (this.laneKey(v.link, v.dir) << 2) | this.laneOn(v, v.link);
+    const claim = this.entryClaims.get(target);
+    if (claim && claim.by !== v && claim.source !== source) {
+      const c = claim.by;
+      const approaching = c.alive && c.to === claim.node && c.cleared === claim.node && c.next === v.next;
+      const entering = c.alive && c.link === v.next && c.from === claim.node && c.s - VEHICLE_TYPES[c.type]!.length < 2;
+      if (approaching || entering) return false;
+    }
+    if (!this.rightOfWay(v)) return false;
+    this.entryClaims.set(target, { by: v, source, node });
+    return true;
+  }
+
+  private rightOfWay(v: Vehicle): boolean {
     const node = v.to;
     // Don't block the box: only go if there is room on the far side.
     if (v.next >= 0 && v.next !== v.link) {
@@ -550,13 +663,13 @@ export class World {
     if (tick === this.ringAt || !this.focus) return;
     this.ringAt = tick;
     this.ring.length = 0;
-    this.bubbleTarget = 0;
+    this.bubbleTarget = [0, 0];
     const { spawnInner, spawnOuter, density } = this.config;
     for (const l of this.graph.links) {
       const [mx, my] = this.mid(l.id);
       const d = Math.hypot(mx - this.focus.x, my - this.focus.y);
       if (d > spawnOuter) continue;
-      this.bubbleTarget += ((2 * l.length) / ROAD_SPECS[l.cls].spacing) * density;
+      this.bubbleTarget[l.cls === 'highway' ? 1 : 0] += ((2 * l.length) / ROAD_SPECS[l.cls].spacing) * density;
       if (d >= spawnInner) this.ring.push(l.id);
     }
   }
@@ -586,7 +699,15 @@ export class World {
     const target = ((2 * 2 * SPAWN_WINDOW) / spec.spacing) * config.density;
     const present = config.spawn === 'radial' ? this.countRadial(linkId, fromA) : this.countAlongRoads(linkId, fromA);
     const shortfall = target - present;
-    if (shortfall <= 0 || !rng.chance(Math.min(1, shortfall))) return false;
+    const spawned = shortfall > 0 && rng.chance(Math.min(1, shortfall));
+    // For the overlay only: was this spot refused because of cars that can't even be driven to?
+    const wronglyFull = !spawned && shortfall <= 0 && config.spawn === 'radial' && target - this.countAlongRoads(linkId, fromA) >= 1;
+    if (spawned || wronglyFull) {
+      const [x, y] = this.pointOn(linkId, fromA);
+      this.spawnLog.push({ x, y, time: this.time, kind: spawned ? 'spawned' : 'wronglyFull' });
+      if (this.spawnLog.length > SPAWN_LOG_SIZE) this.spawnLog.splice(0, this.spawnLog.length - SPAWN_LOG_SIZE);
+    }
+    if (!spawned) return false;
 
     this.insertLane(this.addVehicle(linkId, dir, s, 'civ', spec.speed * speedFactor));
     this.stats.spawned++;
@@ -739,12 +860,18 @@ export class World {
     return v.id % ROAD_SPECS[this.graph.links[link]!.cls].lanes;
   }
 
-  /** The next vehicle ahead in the same lane of the same link, if any. */
+  /**
+   * The next vehicle ahead on the same link that is in our way: either in our lane,
+   * or in another lane but about to merge into the same lane of the same next link.
+   */
   private leaderOnLink(v: Vehicle): Vehicle | undefined {
     const list = this.lanes[this.laneKey(v.link, v.dir)]!;
     const lane = this.laneOn(v, v.link);
+    const nextLane = v.next >= 0 ? this.laneOn(v, v.next) : -1;
     for (let i = list.indexOf(v) + 1; i < list.length; i++) {
-      if (this.laneOn(list[i]!, v.link) === lane) return list[i];
+      const o = list[i]!;
+      if (this.laneOn(o, v.link) === lane) return o;
+      if (nextLane >= 0 && o.next === v.next && this.laneOn(o, v.next) === nextLane) return o;
     }
     return undefined;
   }
