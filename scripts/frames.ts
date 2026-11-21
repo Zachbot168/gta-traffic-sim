@@ -5,12 +5,15 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { buildScene, STAGES } from '../src/app/stages';
 import { drawChart, layoutCharts } from '../src/render/charts';
 import { fitCamera, Renderer, type Camera } from '../src/render/render';
+import { MONO_FONT, MonoRenderer } from '../src/render/render-mono';
 
 const W = 1280;
 const H = 720;
 const DT = 1 / 30;
 const seconds = Number(process.argv[2] ?? 45);
 const only = process.argv.slice(3);
+// STYLE=color for the original look. The default is the monochrome one.
+const mono = process.env.STYLE !== 'color';
 
 mkdirSync('out/frames', { recursive: true });
 for (const stage of STAGES) {
@@ -27,14 +30,15 @@ for (const stage of STAGES) {
 
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d') as unknown as CanvasRenderingContext2D;
-  new Renderer(scene.map, scene.world.coarse).draw(ctx, W, H, cam, scene.world, scene.overlays, scene.demo, scene.chase);
+  const renderer = mono ? new MonoRenderer(scene.map, scene.world.coarse) : new Renderer(scene.map, scene.world.coarse);
+  renderer.draw(ctx, W, H, cam, scene.world, scene.overlays, scene.demo, scene.chase);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (scene.charts) {
     const rects = layoutCharts(scene.charts.length, W, H, 0, 0);
-    scene.charts.forEach((chart, i) => drawChart(ctx, rects[i]!, chart));
+    scene.charts.forEach((chart, i) => drawChart(ctx, rects[i]!, chart, 1, mono ? 'mono' : 'color'));
   }
   ctx.fillStyle = '#ffffff';
-  ctx.font = '600 20px sans-serif';
+  ctx.font = mono ? `700 16px ${MONO_FONT}` : '600 20px sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillText(`${stage.key}  ${stage.title}  (${scene.world.vehicles.length} cars, t=${seconds}s)`, 16, 14);

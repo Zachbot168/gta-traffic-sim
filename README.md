@@ -59,6 +59,7 @@ The experiment can be split across cores: `npm run chases -- 40 0/2` and `npm ru
 | K | Escape strategy (the last option is manual driving) |
 | O | Police tactic |
 | Arrow keys | In manual driving: left / right pick the turn at the next junction, down brakes. Use , and . to change stage |
+| V | Visual style: monochrome text look (default) or the original colour look |
 | H | Hide panels for recording (Esc or double-click to bring them back) |
 
 Drag to pan, scroll or pinch to zoom. The stage is kept in the URL (`#3b`, or `#3b-clean` with panels hidden), so a shot can be reopened directly.

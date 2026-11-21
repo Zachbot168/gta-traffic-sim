@@ -54,19 +54,59 @@ export interface HitPoint {
 
 type Ctx = CanvasRenderingContext2D;
 
-export function drawChart(ctx: Ctx, rect: Rect, spec: ChartSpec, scale = 1): HitPoint[] {
+export type ChartStyle = 'color' | 'mono';
+
+/** In the monochrome style, series are told apart by dash pattern and marker shape instead of colour. */
+const MONO_DASHES: number[][] = [[], [7, 4], [2, 3], [9, 3, 2, 3], [14, 4]];
+type Marker = 'circle' | 'square' | 'triangle' | 'diamond' | 'cross';
+const MONO_MARKERS: Marker[] = ['circle', 'square', 'triangle', 'diamond', 'cross'];
+
+function marker(ctx: Ctx, shape: Marker, x: number, y: number, r: number): void {
+  ctx.beginPath();
+  if (shape === 'circle') ctx.arc(x, y, r, 0, Math.PI * 2);
+  else if (shape === 'square') ctx.rect(x - r * 0.85, y - r * 0.85, r * 1.7, r * 1.7);
+  else if (shape === 'triangle') {
+    ctx.moveTo(x, y - r * 1.15);
+    ctx.lineTo(x + r * 1.1, y + r * 0.85);
+    ctx.lineTo(x - r * 1.1, y + r * 0.85);
+    ctx.closePath();
+  } else if (shape === 'diamond') {
+    ctx.moveTo(x, y - r * 1.25);
+    ctx.lineTo(x + r * 1.25, y);
+    ctx.lineTo(x, y + r * 1.25);
+    ctx.lineTo(x - r * 1.25, y);
+    ctx.closePath();
+  } else {
+    const w = r * 0.38;
+    ctx.rect(x - r * 1.1, y - w, r * 2.2, w * 2);
+    ctx.rect(x - w, y - r * 1.1, w * 2, r * 2.2);
+  }
+}
+
+export function drawChart(ctx: Ctx, rect: Rect, source: ChartSpec, scale = 1, style: ChartStyle = 'color'): HitPoint[] {
   const hits: HitPoint[] = [];
   const u = scale;
+  const mono = style === 'mono';
+  // Monochrome: every series is white, and gets its own dash pattern and marker shape.
+  const shapes = new Map<string, Marker>();
+  const dashes = new Map<string, number[]>();
+  const spec: ChartSpec = mono ? { ...source, series: source.series.map((s) => ({ ...s, color: '#ffffff' })) } : source;
+  spec.series.forEach((s, i) => {
+    shapes.set(s.label, mono ? MONO_MARKERS[i % MONO_MARKERS.length]! : 'circle');
+    dashes.set(s.label, mono ? MONO_DASHES[i % MONO_DASHES.length]!.map((d) => d * u) : s.dashed ? [6 * u, 5 * u] : []);
+  });
   const fx = spec.xFormat ?? ((v: number) => String(v));
   const fy = spec.yFormat ?? ((v: number) => String(v));
-  const font = (size: number, weight = 400) => `${weight} ${size * u}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  const family = mono ? 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace' : 'system-ui, -apple-system, "Segoe UI", sans-serif';
+  const font = (size: number, weight = 400) => `${weight} ${(mono ? size * 0.94 : size) * u}px ${family}`;
+  const surface = mono ? '#000000' : SURFACE;
 
   // Panel.
   ctx.save();
-  ctx.fillStyle = 'rgba(13,17,25,0.95)';
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillStyle = mono ? '#000000' : 'rgba(13,17,25,0.95)';
+  ctx.strokeStyle = mono ? '#ffffff' : 'rgba(255,255,255,0.12)';
   ctx.lineWidth = u;
-  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 12 * u);
+  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, mono ? 0 : 12 * u);
   ctx.fill();
   ctx.stroke();
 
@@ -76,7 +116,7 @@ export function drawChart(ctx: Ctx, rect: Rect, spec: ChartSpec, scale = 1): Hit
   ctx.textBaseline = 'top';
   ctx.fillStyle = INK.primary;
   ctx.font = font(16, 700);
-  ctx.fillText(spec.title, rect.x + pad, top);
+  ctx.fillText(mono ? spec.title.toUpperCase() : spec.title, rect.x + pad, top);
   top += 22 * u;
   if (spec.subtitle) {
     ctx.fillStyle = INK.secondary;
@@ -92,21 +132,27 @@ export function drawChart(ctx: Ctx, rect: Rect, spec: ChartSpec, scale = 1): Hit
     let lx = rect.x + pad;
     top += 4 * u;
     for (const s of spec.series) {
-      const w = ctx.measureText(s.label).width + 34 * u;
+      const swatch = mono ? 34 * u : 18 * u;
+      const w = ctx.measureText(s.label).width + swatch + 16 * u;
       if (lx + w > rect.x + rect.w - pad) {
         lx = rect.x + pad;
         top += 18 * u;
       }
       ctx.strokeStyle = s.color;
-      ctx.lineWidth = 2.5 * u;
-      ctx.setLineDash(s.dashed ? [5 * u, 4 * u] : []);
+      ctx.lineWidth = (mono ? 1.6 : 2.5) * u;
+      ctx.setLineDash(dashes.get(s.label)!);
       ctx.beginPath();
       ctx.moveTo(lx, top + 7 * u);
-      ctx.lineTo(lx + 18 * u, top + 7 * u);
+      ctx.lineTo(lx + swatch, top + 7 * u);
       ctx.stroke();
       ctx.setLineDash([]);
+      if (mono) {
+        ctx.fillStyle = s.color;
+        marker(ctx, shapes.get(s.label)!, lx + swatch / 2, top + 7 * u, 3.6 * u);
+        ctx.fill();
+      }
       ctx.fillStyle = INK.secondary;
-      ctx.fillText(s.label, lx + 24 * u, top);
+      ctx.fillText(s.label, lx + swatch + 6 * u, top);
       lx += w;
     }
     top += 20 * u;
@@ -154,9 +200,9 @@ export function drawChart(ctx: Ctx, rect: Rect, spec: ChartSpec, scale = 1): Hit
   for (const s of spec.series) {
     if (s.line && s.line.length > 1) {
       ctx.strokeStyle = s.color;
-      ctx.lineWidth = 2 * u;
+      ctx.lineWidth = (mono ? 1.6 : 2) * u;
       ctx.lineJoin = 'round';
-      ctx.setLineDash(s.dashed ? [6 * u, 5 * u] : []);
+      ctx.setLineDash(dashes.get(s.label)!);
       ctx.beginPath();
       s.line.forEach(([x, y], i) => (i ? ctx.lineTo(sx(x), sy(y)) : ctx.moveTo(sx(x), sy(y))));
       ctx.stroke();
@@ -167,10 +213,9 @@ export function drawChart(ctx: Ctx, rect: Rect, spec: ChartSpec, scale = 1): Hit
     const marks = s.dots ?? (s.line && s.line.length <= 12 ? s.line : []);
     for (const [x, y] of marks) {
       ctx.fillStyle = s.color;
-      ctx.strokeStyle = SURFACE;
+      ctx.strokeStyle = surface;
       ctx.lineWidth = 2 * u;
-      ctx.beginPath();
-      ctx.arc(sx(x), sy(y), 4.5 * u, 0, Math.PI * 2);
+      marker(ctx, shapes.get(s.label)!, sx(x), sy(y), 4.5 * u);
       ctx.fill();
       ctx.stroke();
       hits.push({ x: sx(x), y: sy(y), color: s.color, text: `${s.label}: ${fy(y)} at ${fx(x)}` });
@@ -192,8 +237,7 @@ export function drawChart(ctx: Ctx, rect: Rect, spec: ChartSpec, scale = 1): Hit
     ctx.textBaseline = 'middle';
     for (const e of ends) {
       ctx.fillStyle = e.color;
-      ctx.beginPath();
-      ctx.arc(right + 10 * u, e.y, 3.5 * u, 0, Math.PI * 2);
+      marker(ctx, shapes.get(e.label)!, right + 10 * u, e.y, 3.5 * u);
       ctx.fill();
       ctx.fillStyle = INK.primary;
       ctx.fillText(e.label, right + 18 * u, e.y);

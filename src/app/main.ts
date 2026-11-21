@@ -5,6 +5,7 @@
  */
 import { drawChart, layoutCharts, type HitPoint } from '../render/charts';
 import { fitCamera, Renderer, type Camera, type Overlays } from '../render/render';
+import { MonoRenderer } from '../render/render-mono';
 import { Chase, COP_LABELS, COP_STRATEGIES, ESCAPE_TIME, FLEE_LABELS, FLEE_STRATEGIES, type ChaseConfig, type FleeStrategy } from '../sim/chase';
 import { Rng } from '../sim/rng';
 import type { RoutingMode } from '../sim/world';
@@ -24,7 +25,9 @@ document.body.appendChild(tip);
 let hits: HitPoint[] = [];
 
 let scene!: Scene;
-let renderer!: Renderer;
+let renderer!: Renderer | MonoRenderer;
+/** Visual style: 'mono' is the black-and-white text look, 'color' the original. */
+let mono = true;
 let cam: Camera = { x: 0, y: 0, zoom: 1 };
 let follow = false;
 let paused = false;
@@ -42,7 +45,7 @@ let height = 0;
 function loadStage(index: number): void {
   stageIndex = (index + STAGES.length) % STAGES.length;
   scene = buildScene(STAGES[stageIndex]!);
-  renderer = new Renderer(scene.map, scene.world.coarse);
+  makeRenderer();
   acc = 0;
   demoSeed = 1;
   buildBar();
@@ -50,10 +53,15 @@ function loadStage(index: number): void {
   rememberStage();
 }
 
+function makeRenderer(): void {
+  renderer = mono ? new MonoRenderer(scene.map, scene.world.coarse) : new Renderer(scene.map, scene.world.coarse);
+  document.body.classList.toggle('mono', mono);
+}
+
 /** Keep the current stage in the address bar so a shot can be reopened directly. */
 function rememberStage(): void {
   try {
-    history.replaceState(null, '', `#${scene.stage.key}${document.body.classList.contains('clean') ? '-clean' : ''}`);
+    history.replaceState(null, '', `#${scene.stage.key}${document.body.classList.contains('clean') ? '-clean' : ''}${mono ? '' : '-color'}`);
   } catch {
     // Some embedded viewers don't allow touching the address bar. The sim works without it.
   }
@@ -108,7 +116,7 @@ function tick(now: number): void {
     const clean = document.body.classList.contains('clean');
     const top = clean ? 0 : (hud.offsetTop + hud.offsetHeight) * dpr();
     const rects = layoutCharts(scene.charts.length, canvas.width, canvas.height, width < 900 ? top : 0, barHeight() * dpr(), dpr());
-    scene.charts.forEach((chart, i) => hits.push(...drawChart(ctx, rects[i]!, chart, dpr())));
+    scene.charts.forEach((chart, i) => hits.push(...drawChart(ctx, rects[i]!, chart, dpr(), mono ? 'mono' : 'color')));
   }
   if (frames++ % 6 === 0) drawHud();
   requestAnimationFrame(tick);
@@ -167,13 +175,13 @@ function drawHud(): void {
   if (!scene.charts) row('Sim time', `${world.time.toFixed(0)}s${paused ? ' (paused)' : ` at ${SPEEDS[speedIndex]}x`}`);
 
   hud.innerHTML =
-    `<div class="chapter">${stage.chapter}</div><div class="title">${stage.key} · ${stage.title}</div>` +
+    `<div class="chapter">${stage.chapter}</div><div class="title">${stage.key} ${mono ? '/' : '·'} ${stage.title}</div>` +
     `<div class="caption">${stage.caption}</div><div class="stats">${rows.join('')}</div>`;
 }
 
 function chaseRows(chase: Chase, row: (label: string, value: string, cls?: string) => void): void {
   const { stars } = chase.config;
-  row('Wanted', '★'.repeat(stars) + '☆'.repeat(5 - stars), 'hot');
+  row('Wanted', mono ? `[${'*'.repeat(stars)}${'-'.repeat(5 - stars)}]` : '★'.repeat(stars) + '☆'.repeat(5 - stars), 'hot');
   const need = ESCAPE_TIME[stars]!;
   if (chase.outcome === 'running') {
     row('Status', chase.seen ? 'IN SIGHT' : `hidden ${chase.hiddenFor.toFixed(1)} of ${need}s`, chase.seen ? 'hot' : 'cool');
@@ -317,6 +325,15 @@ const controls: Control[] = [
       const order = ['full', 'coarse', 'both'] as const;
       scene.demo.show = order[(order.indexOf(scene.demo.show) + 1) % order.length]!;
       scene.demo.revealed = 0;
+    },
+  },
+  {
+    label: () => `Style: ${mono ? 'mono' : 'color'}`,
+    key: 'V',
+    run: () => {
+      mono = !mono;
+      makeRenderer();
+      rememberStage();
     },
   },
   { label: () => 'Hide panels', key: 'H', run: () => setClean(true) },
@@ -511,5 +528,6 @@ window.addEventListener('resize', () => {
 resize();
 const wanted = location.hash.replace('#', '').split('-');
 if (wanted.includes('clean')) document.body.classList.add('clean');
+if (wanted.includes('color')) mono = false;
 loadStage(Math.max(0, STAGES.findIndex((s) => s.key === wanted[0])));
 requestAnimationFrame(tick);

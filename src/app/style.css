@@ -95,3 +95,55 @@ body.clean #hud, body.clean #bar { display: none; }
   z-index: 5;
 }
 #bar .drive button { flex: 1 0 auto; min-height: 44px; }
+
+/* ---- Monochrome text style ---------------------------------------------- */
+body.mono {
+  --bg: #000;
+  --panel: #000;
+  --line: #5a5a5a;
+  --text: #fff;
+  --dim: #9a9a9a;
+  --accent: #fff;
+  --warm: #fff;
+  background: #000;
+  font: 13px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+body.mono #hud {
+  border: 1px solid #fff;
+  border-radius: 0;
+  backdrop-filter: none;
+  padding: 10px 12px;
+}
+body.mono #hud .chapter { color: #9a9a9a; font-weight: 400; letter-spacing: 0.08em; }
+body.mono #hud .chapter::before { content: "# "; }
+body.mono #hud .title { font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em; }
+body.mono #hud .caption { color: #b8b8b8; }
+body.mono #hud .stats { border-top: 1px dashed #5a5a5a; }
+body.mono #hud .stats div { align-items: baseline; }
+/* Dotted leaders between label and value, like a printed table of contents. */
+body.mono #hud .stats span:first-child { flex: 1; display: flex; white-space: nowrap; }
+body.mono #hud .stats span:first-child::after {
+  content: "";
+  flex: 1;
+  margin: 0 6px;
+  border-bottom: 1px dotted #5a5a5a;
+  transform: translateY(-3px);
+}
+body.mono #hud .stats .hot span:last-child,
+body.mono #hud .stats .cool span:last-child { color: #fff; font-weight: 700; }
+body.mono #bar { border-top: 1px solid #fff; backdrop-filter: none; }
+body.mono #bar button {
+  border: 1px solid #5a5a5a;
+  border-radius: 0;
+  background: #000;
+  color: #fff;
+  font-weight: 400;
+  min-height: 32px;
+  padding: 0 10px;
+}
+body.mono #bar button:hover { border-color: #fff; background: #000; }
+body.mono #bar button.on { background: #fff; border-color: #fff; color: #000; }
+body.mono #bar button .k { color: inherit; opacity: 0.55; }
+body.mono #bar button .k::before { content: "["; }
+body.mono #bar button .k::after { content: "]"; }
+body.mono #tip { background: #000; border: 1px solid #fff; border-radius: 0; font-family: inherit; }

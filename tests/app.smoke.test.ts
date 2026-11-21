@@ -57,7 +57,7 @@ describe('browser front end', { timeout: 240_000 }, () => {
     for (const key of ['4', '3', '6']) {
       press(key);
       runFrames(10);
-      for (const k of ['g', 'c', 'b', 's', 'f', 'm', 'm', 'p', '-', '+', 'r', 't', 't', 'w', 'u', 'u', 'y', 'k', 'o', 'x', ']', '[', ' ', ' ', '0', 'h', 'Escape']) {
+      for (const k of ['g', 'c', 'b', 's', 'f', 'm', 'm', 'p', '-', '+', 'r', 't', 't', 'w', 'u', 'u', 'y', 'k', 'o', 'x', 'v', 'v', ']', '[', ' ', ' ', '0', 'h', 'Escape']) {
         press(k);
         runFrames(7);
       }
@@ -79,6 +79,16 @@ describe('browser front end', { timeout: 240_000 }, () => {
     press('ArrowLeft');
     runFrames(10);
     expect(hudText()).toContain('6a');
+  });
+
+  it('switches between the monochrome and colour styles', () => {
+    expect(document.body.classList.contains('mono')).toBe(true);
+    press('v');
+    runFrames(6);
+    expect(document.body.classList.contains('mono')).toBe(false);
+    press('v');
+    runFrames(6);
+    expect(document.body.classList.contains('mono')).toBe(true);
   });
 
   it('reports the coarse search as cheaper and the route as identical', () => {
