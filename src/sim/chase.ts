@@ -17,6 +17,17 @@ export type CopStrategy = 'chase' | 'intercept' | 'roadblock';
 
 export const FLEE_STRATEGIES: FleeStrategy[] = ['straight', 'highway', 'weave', 'hide', 'run'];
 export const COP_STRATEGIES: CopStrategy[] = ['chase', 'intercept', 'roadblock'];
+/**
+ * What the police know. 'search': only what an officer can see, so they have to hunt
+ * around the last known position. 'psychic': every unit always knows where the hero is,
+ * even though the hide timer still runs on real line of sight.
+ */
+export type Knowledge = 'search' | 'psychic';
+export const KNOWLEDGE: Knowledge[] = ['search', 'psychic'];
+export const KNOWLEDGE_LABELS: Record<Knowledge, string> = {
+  search: 'Police must search',
+  psychic: 'Psychic police',
+};
 
 export const FLEE_LABELS: Record<FleeStrategy, string> = {
   straight: 'Floor it in a straight line',
@@ -49,8 +60,8 @@ const HELI_SPEED = 30;
 const SHOOT_RANGE = 45;
 const PIN_RANGE = 9;
 const PIN_TIME = 2.5;
-const COP_PACE = 1.5;
-const HERO_PACE = 1.6;
+export const COP_PACE = 1.5;
+export const HERO_PACE = 1.6;
 
 export type Outcome = 'running' | 'escaped' | 'caught' | 'timeout';
 
@@ -60,6 +71,9 @@ export interface ChaseConfig {
   cops: CopStrategy;
   /** Give up and call it a failed escape after this many seconds. */
   timeLimit: number;
+  knowledge: Knowledge;
+  /** Police top speed as a multiple of the speed limit. The hero drives at 1.6. */
+  copPace: number;
 }
 
 interface CopState {
@@ -108,7 +122,7 @@ export class Chase implements ChaseHook {
     config: Partial<ChaseConfig> = {},
     occlusion?: Occlusion,
   ) {
-    this.config = { stars: 1, flee: 'weave', cops: 'chase', timeLimit: 150, ...config };
+    this.config = { stars: 1, flee: 'weave', cops: 'chase', timeLimit: 150, knowledge: 'search', copPace: COP_PACE, ...config };
     this.occlusion = occlusion ?? new Occlusion(world.graph);
     this.rng = world.rng.fork();
     const hero = world.hero!;
@@ -150,8 +164,13 @@ export class Chase implements ChaseHook {
     const dir = g.links[link]!.b === ahead ? 1 : -1;
     const cop = world.addVehicle(link, dir, 1, 'cop', 8);
     cop.emergency = true;
-    cop.pace = COP_PACE;
+    cop.pace = this.config.copPace;
     this.state(cop);
+  }
+
+  /** Do the police know where the hero is right now? */
+  get knows(): boolean {
+    return this.seen || this.config.knowledge === 'psychic';
   }
 
   get cops(): Vehicle[] {
@@ -275,7 +294,7 @@ export class Chase implements ChaseHook {
     const { world, rng } = this;
     const g = world.graph;
     const hero = world.hero!;
-    const anchor = this.seen ? hero : this.lastKnown;
+    const anchor = this.knows ? hero : this.lastKnown;
     for (let attempt = 0; attempt < 60; attempt++) {
       const node = g.nodes[rng.int(g.nodes.length)]!;
       if (node.level !== 0 || g.degree(node.id) < 2) continue;
@@ -298,7 +317,7 @@ export class Chase implements ChaseHook {
       if (!world.isFree(best, dir, 1, 8)) continue;
       const cop = world.addVehicle(best, dir, 1, 'cop', 6);
       cop.emergency = true;
-      cop.pace = COP_PACE;
+      cop.pace = this.config.copPace;
       this.state(cop);
       return true;
     }
@@ -313,7 +332,7 @@ export class Chase implements ChaseHook {
     const g = this.world.graph;
 
     let goal: number;
-    if (this.seen) {
+    if (this.knows) {
       st.searching = false;
       const cut = this.config.cops === 'intercept' && st.role === 'cut';
       const gap = Math.hypot(hero.x - cop.x, hero.y - cop.y);
@@ -410,7 +429,7 @@ export class Chase implements ChaseHook {
     // Follow the hero while they are in view; otherwise circle the last known position.
     let tx = hero.x;
     let ty = hero.y;
-    if (!heli.sees) {
+    if (!heli.sees && this.config.knowledge !== 'psychic') {
       tx = this.lastKnown.x + Math.cos(this.elapsed * 0.35) * 70;
       ty = this.lastKnown.y + Math.sin(this.elapsed * 0.35) * 70;
     }
@@ -529,7 +548,7 @@ export class Chase implements ChaseHook {
       return g.linkBetween(node, route[cop.routeAt + 1]!);
     }
     // No plan right now: take whichever exit points most directly at the target.
-    const target = this.seen ? this.world.hero! : this.lastKnown;
+    const target = this.knows ? this.world.hero! : this.lastKnown;
     let best = -1;
     let bestD = Infinity;
     for (const id of g.adj[node]!) {

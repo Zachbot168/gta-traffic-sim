@@ -147,3 +147,7 @@ body.mono #bar button .k { color: inherit; opacity: 0.55; }
 body.mono #bar button .k::before { content: "["; }
 body.mono #bar button .k::after { content: "]"; }
 body.mono #tip { background: #000; border: 1px solid #fff; border-radius: 0; font-family: inherit; }
+
+/* 9:16 framing for vertical clips: the view is a centred column, the rest of the window stays black. */
+body.tall { background: #000; }
+body.tall #view { right: auto; outline: 1px solid rgba(255, 255, 255, 0.25); }

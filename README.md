@@ -36,6 +36,8 @@ npm run chases -- 40     # the escape experiment: 40 chases per configuration (7
 npm run chases -- --merge  # combine shard files into data/chase-results.csv and the in-app chart
 ```
 
+`npm run chases -- 40 0/1 psychic` runs only one kind of police knowledge (`search` or `psychic`). `npm run sweep -- 40` reruns three escape strategies while police top speed goes from 1.3x to 1.9x the limit. `ASPECT=tall npm run frames` renders 1080x1920 portrait stills.
+
 The experiment can be split across cores: `npm run chases -- 40 0/2` and `npm run chases -- 40 1/2` in two terminals, then merge.
 
 ## Controls
@@ -58,11 +60,13 @@ The experiment can be split across cores: `npm run chases -- 40 0/2` and `npm ru
 | Y and U | Wanted level down / up |
 | K | Escape strategy (the last option is manual driving) |
 | O | Police tactic |
+| J | What the police know: they must search, or they always know where you are ("psychic") |
 | Arrow keys | In manual driving: left / right pick the turn at the next junction, down brakes. Use , and . to change stage |
 | V | Visual style: monochrome text look (default) or the original colour look |
+| A | Frame the view as a centred 9:16 column for vertical clips |
 | H | Hide panels for recording (Esc or double-click to bring them back) |
 
-Drag to pan, scroll or pinch to zoom. The stage is kept in the URL (`#3b`, or `#3b-clean` with panels hidden), so a shot can be reopened directly.
+Drag to pan, scroll or pinch to zoom. The stage is kept in the URL (`#3b`, or `#3b-clean` with panels hidden, `#6c-clean-tall` for a clean vertical shot), so a shot can be reopened directly.
 
 ## Reproducibility
 
@@ -90,3 +94,18 @@ Full vs coarse search over 400 random trips per city size (`data/routing-bench.c
 | 4,104 | 34,028 | 3,931 | 7,577 | 877 | 8.6x | 400/400 |
 
 The saving is flat at about 8.6x. It tracks how many low-level nodes sit between forks, not how big the city is.
+
+Police who must search against police who always know where you are, 3,000 chases each from the same seeded starts (`data/chase-results.csv`). Escape rate by wanted level:
+
+| Stars | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Police must search, all strategies | 98% | 91% | 67% | 17% | 16% |
+| Psychic police, all strategies | 95% | 75% | 58% | 4% | 2% |
+| Hide, police must search | 96% | 61% | 23% | 0% | 0% |
+| Hide, psychic police | 80% | 8% | 0% | 0% | 0% |
+| Highway, police must search | 100% | 100% | 92% | 47% | 41% |
+| Highway, psychic police | 99% | 98% | 88% | 8% | 4% |
+
+In psychic mode every unit always drives at the hero's true position, but the hide timer still runs on real line of sight. The police rules, speeds and timers are this project's own design, so these are results about this sim, not about any shipped game.
+
+Police speed sweep, 40 chases per point (`data/pace-sweep.csv`): with police top speed anywhere from 1.3x to 1.9x the limit (the hero drives at 1.6x), heading for the highway stays ahead of hiding at three and five stars. The ranking did not flip in that range.

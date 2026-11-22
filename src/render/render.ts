@@ -270,7 +270,7 @@ export class Renderer {
       }
     }
 
-    if (live && !chase.seen && hero) {
+    if (live && !chase.knows && hero) {
       // Where the police think the hero is, and how far the search has spread.
       const lk = chase.lastKnown;
       ctx.strokeStyle = '#ffd166';

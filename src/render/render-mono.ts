@@ -362,7 +362,7 @@ export class MonoRenderer {
       }
     }
 
-    if (live && !chase.seen) {
+    if (live && !chase.knows) {
       const lk = chase.lastKnown;
       ctx.strokeStyle = WHITE;
       ctx.lineWidth = line;

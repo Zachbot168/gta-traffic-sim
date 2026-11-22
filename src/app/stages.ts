@@ -3,7 +3,7 @@
  * and says how to frame it, so any shot can be recalled and replays identically.
  * No DOM in here; the headless frame renderer uses the same presets.
  */
-import { Chase, COP_LABELS, COP_STRATEGIES, FLEE_LABELS, FLEE_STRATEGIES, type ChaseConfig } from '../sim/chase';
+import { Chase, COP_LABELS, COP_STRATEGIES, FLEE_LABELS, FLEE_STRATEGIES, KNOWLEDGE_LABELS, type ChaseConfig } from '../sim/chase';
 import { generateCity, type CityMap, type Scale } from '../sim/mapgen';
 import { CAR_SPECS, evalCurve, PERFORMANCE } from '../sim/perf';
 import { Rng } from '../sim/rng';
@@ -302,11 +302,30 @@ export const STAGES: Stage[] = [
     key: '6e',
     chapter: '6. Five stars',
     title: 'The experiment',
-    caption: `${chaseResults.chases.toLocaleString('en-US')} simulated chases, every strategy run from the same starting points.`,
+    caption: `${chaseResults.searchChases.toLocaleString('en-US')} simulated chases, every strategy run from the same starting points.`,
     scale: 'city',
     build: (map) => {
       const w = world(map);
       return { world: w, overlays: none, framing: { kind: 'fit' }, demo: null, demoRate: 0, charts: resultCharts() };
+    },
+  },
+  {
+    key: '6f',
+    chapter: '6. Five stars',
+    title: 'Psychic police',
+    caption: 'The same three-star chase as 6b, but every unit always knows where you are. No search ring: they never have to look.',
+    scale: 'city',
+    build: cityChase({ stars: 3, flee: 'run', cops: 'intercept', knowledge: 'psychic' }, 1.6),
+  },
+  {
+    key: '6g',
+    chapter: '6. Five stars',
+    title: 'Does searching matter?',
+    caption: 'Every chase run twice from the same start: once against police who must search, once against police who always know.',
+    scale: 'city',
+    build: (map) => {
+      const w = world(map);
+      return { world: w, overlays: none, framing: { kind: 'fit' }, demo: null, demoRate: 0, charts: knowledgeCharts() };
     },
   },
 ];
@@ -391,6 +410,38 @@ function resultCharts(): ChartSpec[] {
       title: 'Which police tactic works?',
       subtitle: `${chaseResults.samplesPerPoint.byCops} chases per point. Lower is better for the police.`,
       series: COP_STRATEGIES.map((c, i) => ({ label: COP_LABELS[c], color: SERIES_COLORS[i]!, line: points(cops[c]!) })),
+    },
+  ];
+}
+
+function knowledgeCharts(): ChartSpec[] {
+  const base = {
+    xLabel: 'Wanted level (stars)',
+    yLabel: 'Chases escaped',
+    xRange: [0.7, 5.3] as [number, number],
+    yRange: [0, 100] as [number, number],
+    xTicks: [1, 2, 3, 4, 5],
+    yTicks: [0, 25, 50, 75, 100],
+    yFormat: pct,
+  };
+  const points = (rates: number[]): [number, number][] => rates.map((r, i) => [i + 1, r]);
+  const psychic = chaseResults.psychic;
+  const flee = psychic.escapeRateByFlee as Record<string, number[]>;
+  return [
+    {
+      ...base,
+      title: 'Searching police against psychic police',
+      subtitle: 'All escape strategies pooled. Same starting points for both.',
+      series: [
+        { label: KNOWLEDGE_LABELS.search, color: SERIES_COLORS[0]!, line: points(chaseResults.escapeRate) },
+        { label: KNOWLEDGE_LABELS.psychic, color: SERIES_COLORS[1]!, line: points(psychic.escapeRate) },
+      ],
+    },
+    {
+      ...base,
+      title: 'Escape strategies against psychic police',
+      subtitle: `${psychic.samplesPerPoint.byFlee} chases per point.`,
+      series: FLEE_STRATEGIES.map((f, i) => ({ label: FLEE_LABELS[f], color: SERIES_COLORS[i]!, line: points(flee[f]!) })),
     },
   ];
 }

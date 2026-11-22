@@ -100,3 +100,41 @@ describe('police chase', () => {
     throw new Error('expected at least one escape at one star');
   });
 });
+
+describe('what the police know', () => {
+  it('defaults to police who have to search, at the usual speed', () => {
+    const { chase: c } = chase({ stars: 2 });
+    expect(c.config.knowledge).toBe('search');
+    expect(c.config.copPace).toBe(1.5);
+  });
+
+  it('psychic police know where the hero is even when nobody can see them', () => {
+    const run = chase({ stars: 3, flee: 'run', cops: 'chase', knowledge: 'psychic' }, 11);
+    let unseenSteps = 0;
+    for (let i = 0; i < 150 / DT && run.chase.outcome === 'running'; i++) {
+      run.world.step(DT);
+      if (!run.chase.seen) {
+        unseenSteps++;
+        expect(run.chase.knows).toBe(true);
+      }
+    }
+    expect(unseenSteps).toBeGreaterThan(0);
+  });
+
+  it('searching police lose track when they lose sight', () => {
+    const run = chase({ stars: 1, flee: 'run', cops: 'chase' }, 11);
+    let lostTrack = false;
+    for (let i = 0; i < 150 / DT && run.chase.outcome === 'running'; i++) {
+      run.world.step(DT);
+      if (!run.chase.seen && !run.chase.knows) lostTrack = true;
+    }
+    expect(lostTrack).toBe(true);
+  });
+
+  it('replays a psychic chase identically from the same seed', () => {
+    const a = finish({ stars: 3, flee: 'highway', cops: 'chase', knowledge: 'psychic' }, 5);
+    const b = finish({ stars: 3, flee: 'highway', cops: 'chase', knowledge: 'psychic' }, 5);
+    expect(a.chase.outcome).toBe(b.chase.outcome);
+    expect(a.chase.elapsed).toBe(b.chase.elapsed);
+  });
+});

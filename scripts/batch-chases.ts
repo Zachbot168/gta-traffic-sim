@@ -1,20 +1,21 @@
 // The chapter 6 experiment: thousands of simulated police chases.
 //
 //   npm run chases -- <chases per configuration> [shard/of]   run (part of) the experiment
+//   npm run chases -- 40 0/2 psychic                          only one kind of police knowledge
 //   npm run chases -- --merge                                 combine shard files into the results
 //
 // A configuration is one star level x one escape strategy x one police strategy.
 // Every configuration is run from the same set of seeded starting points, so strategies
 // are compared on identical situations.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { Chase, COP_STRATEGIES, FLEE_STRATEGIES, type CopStrategy, type FleeStrategy } from '../src/sim/chase';
+import { Chase, COP_STRATEGIES, FLEE_STRATEGIES, KNOWLEDGE, type CopStrategy, type FleeStrategy, type Knowledge } from '../src/sim/chase';
 import { generateCity } from '../src/sim/mapgen';
 import { Occlusion } from '../src/sim/occlusion';
 import { Rng } from '../src/sim/rng';
 import { World } from '../src/sim/world';
 
 const DT = 1 / 30;
-const HEADER = 'stars,flee,cops,seed,outcome,seconds,health,end';
+const HEADER = 'knowledge,stars,flee,cops,seed,outcome,seconds,health,end';
 
 if (process.argv.includes('--merge')) merge();
 else run();
@@ -22,6 +23,7 @@ else run();
 function run(): void {
   const perConfig = Number(process.argv[2] ?? 40);
   const [shard, of] = (process.argv[3] ?? '0/1').split('/').map(Number) as [number, number];
+  const kinds = process.argv[4] ? [process.argv[4] as Knowledge] : KNOWLEDGE;
   const map = generateCity('city', 1);
   const occlusion = new Occlusion(map.graph);
   const ground = map.graph.nodes.filter((n) => {
@@ -35,6 +37,7 @@ function run(): void {
   const started = Date.now();
   let done = 0;
   let index = 0;
+  for (const knowledge of kinds)
   for (let stars = 1; stars <= 5; stars++) {
     for (const flee of FLEE_STRATEGIES) {
       for (const cops of COP_STRATEGIES) {
@@ -46,15 +49,15 @@ function run(): void {
           world.fillBubble();
           // Let traffic settle for a few seconds before the crime happens.
           for (let i = 0; i < 5 / DT; i++) world.step(DT);
-          const chase = new Chase(world, { stars, flee, cops }, occlusion);
+          const chase = new Chase(world, { stars, flee, cops, knowledge }, occlusion);
           while (chase.outcome === 'running') world.step(DT);
           const end = chase.outcome === 'caught' ? (chase.health <= 0 ? 'shot' : 'pinned') : chase.outcome;
-          rows.push([stars, flee, cops, seed, chase.outcome, chase.elapsed.toFixed(1), Math.max(0, chase.health).toFixed(0), end].join(','));
+          rows.push([knowledge, stars, flee, cops, seed, chase.outcome, chase.elapsed.toFixed(1), Math.max(0, chase.health).toFixed(0), end].join(','));
           done++;
         }
-        console.log(`[${shard}/${of}] stars=${stars} ${flee} vs ${cops}: ${done} chases, ${((Date.now() - started) / 1000).toFixed(0)}s`);
+        console.log(`[${shard}/${of}] ${knowledge} stars=${stars} ${flee} vs ${cops}: ${done} chases, ${((Date.now() - started) / 1000).toFixed(0)}s`);
         mkdirSync('out', { recursive: true });
-        writeFileSync(`out/chases-${shard}-of-${of}.csv`, rows.join('\n') + '\n');
+        writeFileSync(`out/chases-${kinds.join('+')}-${shard}-of-${of}.csv`, rows.join('\n') + '\n');
       }
     }
   }
@@ -69,7 +72,7 @@ interface Cell {
 }
 
 function merge(): void {
-  const files = existsSync('out') ? readdirSync('out').filter((f) => /^chases-\d+-of-\d+\.csv$/.test(f)) : [];
+  const files = existsSync('out') ? readdirSync('out').filter((f) => /^chases-.*\.csv$/.test(f)) : [];
   if (files.length === 0) throw new Error('No shard files in out/. Run the experiment first.');
   const rows = files.flatMap((f) => readFileSync(`out/${f}`, 'utf8').trim().split('\n').slice(1));
   rows.sort();
@@ -85,27 +88,36 @@ function merge(): void {
     } else if (outcome === 'caught') c.caught++;
     else c.timeout++;
   };
-  const byFlee: Record<string, Cell[]> = {};
-  const byCops: Record<string, Cell[]> = {};
-  const overall: Cell[] = [0, 1, 2, 3, 4, 5].map(cell);
-  for (const f of FLEE_STRATEGIES) byFlee[f] = [0, 1, 2, 3, 4, 5].map(cell);
-  for (const c of COP_STRATEGIES) byCops[c] = [0, 1, 2, 3, 4, 5].map(cell);
-  for (const row of rows) {
-    const [stars, flee, cops, , outcome, seconds] = row.split(',') as [string, FleeStrategy, CopStrategy, string, string, string];
-    add(byFlee[flee]![Number(stars)]!, outcome, Number(seconds));
-    add(byCops[cops]![Number(stars)]!, outcome, Number(seconds));
-    add(overall[Number(stars)]!, outcome, Number(seconds));
-  }
   const rate = (c: Cell) => (c.n ? Math.round((1000 * c.escaped) / c.n) / 10 : 0);
-  const summary = {
-    chases: rows.length,
-    stars: [1, 2, 3, 4, 5],
-    escapeRateByFlee: Object.fromEntries(FLEE_STRATEGIES.map((f) => [f, [1, 2, 3, 4, 5].map((s) => rate(byFlee[f]![s]!))])),
-    escapeRateByCops: Object.fromEntries(COP_STRATEGIES.map((c) => [c, [1, 2, 3, 4, 5].map((s) => rate(byCops[c]![s]!))])),
-    escapeRate: [1, 2, 3, 4, 5].map((s) => rate(overall[s]!)),
-    meanEscapeSeconds: [1, 2, 3, 4, 5].map((s) => (overall[s]!.escaped ? Math.round((10 * overall[s]!.escapeSeconds) / overall[s]!.escaped) / 10 : null)),
-    samplesPerPoint: { byFlee: byFlee[FLEE_STRATEGIES[0]!]![1]!.n, byCops: byCops[COP_STRATEGIES[0]!]![1]!.n },
+  const five = [1, 2, 3, 4, 5];
+  const summarise = (kind: Knowledge) => {
+    const byFlee: Record<string, Cell[]> = {};
+    const byCops: Record<string, Cell[]> = {};
+    const overall: Cell[] = [0, 1, 2, 3, 4, 5].map(cell);
+    for (const f of FLEE_STRATEGIES) byFlee[f] = [0, 1, 2, 3, 4, 5].map(cell);
+    for (const c of COP_STRATEGIES) byCops[c] = [0, 1, 2, 3, 4, 5].map(cell);
+    let n = 0;
+    for (const row of rows) {
+      const [knowledge, stars, flee, cops, , outcome, seconds] = row.split(',') as [Knowledge, string, FleeStrategy, CopStrategy, string, string, string];
+      if (knowledge !== kind) continue;
+      n++;
+      add(byFlee[flee]![Number(stars)]!, outcome, Number(seconds));
+      add(byCops[cops]![Number(stars)]!, outcome, Number(seconds));
+      add(overall[Number(stars)]!, outcome, Number(seconds));
+    }
+    return {
+      chases: n,
+      escapeRateByFlee: Object.fromEntries(FLEE_STRATEGIES.map((f) => [f, five.map((s) => rate(byFlee[f]![s]!))])),
+      escapeRateByCops: Object.fromEntries(COP_STRATEGIES.map((c) => [c, five.map((s) => rate(byCops[c]![s]!))])),
+      escapeRate: five.map((s) => rate(overall[s]!)),
+      meanEscapeSeconds: five.map((s) => (overall[s]!.escaped ? Math.round((10 * overall[s]!.escapeSeconds) / overall[s]!.escaped) / 10 : null)),
+      samplesPerPoint: { byFlee: byFlee[FLEE_STRATEGIES[0]!]![1]!.n, byCops: byCops[COP_STRATEGIES[0]!]![1]!.n },
+    };
   };
+  const search = summarise('search');
+  const psychic = summarise('psychic');
+  // The top-level fields are the police-have-to-search results, which is the main experiment.
+  const summary = { ...search, chases: rows.length, stars: five, searchChases: search.chases, psychic };
   writeFileSync('src/app/chase-results.json', JSON.stringify(summary, null, 2) + '\n');
   console.log(`${rows.length} chases merged`);
   console.log('escape rate % by stars 1..5');

@@ -39,6 +39,10 @@ let demoSeed = 1;
 let frames = 0;
 let width = 0;
 let height = 0;
+/** Portrait framing for vertical clips: the view becomes a centred 9:16 column. */
+let tall = false;
+/** Left edge of the view in window pixels (non-zero only in the 9:16 framing). */
+let offsetX = 0;
 
 // ------------------------------------------------------------------ stages
 
@@ -61,7 +65,7 @@ function makeRenderer(): void {
 /** Keep the current stage in the address bar so a shot can be reopened directly. */
 function rememberStage(): void {
   try {
-    history.replaceState(null, '', `#${scene.stage.key}${document.body.classList.contains('clean') ? '-clean' : ''}${mono ? '' : '-color'}`);
+    history.replaceState(null, '', `#${scene.stage.key}${document.body.classList.contains('clean') ? '-clean' : ''}${mono ? '' : '-color'}${tall ? '-tall' : ''}`);
   } catch {
     // Some embedded viewers don't allow touching the address bar. The sim works without it.
   }
@@ -127,8 +131,12 @@ function dpr(): number {
 }
 
 function resize(): void {
-  width = window.innerWidth;
   height = window.innerHeight;
+  width = tall ? Math.min(window.innerWidth, Math.round((height * 9) / 16)) : window.innerWidth;
+  offsetX = Math.round((window.innerWidth - width) / 2);
+  canvas.style.width = `${width}px`;
+  canvas.style.left = `${offsetX}px`;
+  document.body.classList.toggle('tall', tall);
   canvas.width = Math.round(width * dpr());
   canvas.height = Math.round(height * dpr());
 }
@@ -194,6 +202,7 @@ function chaseRows(chase: Chase, row: (label: string, value: string, cls?: strin
   row('Police units', `${chase.cops.length}${extras.length ? ` + ${extras.join(' + ')}` : ''}`);
   row('Escape plan', FLEE_LABELS[chase.config.flee]);
   row('Police tactic', COP_LABELS[chase.config.cops]);
+  row('Police know', chase.config.knowledge === 'psychic' ? 'where you are, always' : 'only what they see', chase.config.knowledge === 'psychic' ? 'hot' : undefined);
 }
 
 /** Start a fresh chase on the current scene, clearing away any previous one. */
@@ -316,6 +325,15 @@ const controls: Control[] = [
       scene.chase.config.cops = COP_STRATEGIES[(COP_STRATEGIES.indexOf(scene.chase.config.cops) + 1) % COP_STRATEGIES.length]!;
     },
   },
+  {
+    label: () => (scene.chase?.config.knowledge === 'psychic' ? 'Police: psychic' : 'Police: must search'),
+    key: 'J',
+    on: () => scene.chase?.config.knowledge === 'psychic',
+    run: () => {
+      if (!scene.chase) return;
+      scene.chase.config.knowledge = scene.chase.config.knowledge === 'psychic' ? 'search' : 'psychic';
+    },
+  },
   { label: () => 'New route', key: 'R', run: () => newDemo() },
   {
     label: () => `Search view: ${scene.demo?.show ?? 'off'}`,
@@ -333,6 +351,17 @@ const controls: Control[] = [
     run: () => {
       mono = !mono;
       makeRenderer();
+      rememberStage();
+    },
+  },
+  {
+    label: () => (tall ? 'Frame 9:16' : 'Frame: full'),
+    key: 'A',
+    on: () => tall,
+    run: () => {
+      tall = !tall;
+      resize();
+      frame();
       rememberStage();
     },
   },
@@ -475,7 +504,7 @@ canvas.addEventListener('pointermove', (e) => {
     let best: HitPoint | null = null;
     let bestD = 22 * dpr();
     for (const h of hits) {
-      const d = Math.hypot(h.x - e.clientX * dpr(), h.y - e.clientY * dpr());
+      const d = Math.hypot(h.x - (e.clientX - offsetX) * dpr(), h.y - e.clientY * dpr());
       if (d < bestD) {
         bestD = d;
         best = h;
@@ -484,7 +513,7 @@ canvas.addEventListener('pointermove', (e) => {
     tip.style.display = best ? 'block' : 'none';
     if (best) {
       tip.textContent = best.text;
-      tip.style.left = `${Math.min(width - 240, best.x / dpr() + 12)}px`;
+      tip.style.left = `${offsetX + Math.min(width - 240, best.x / dpr() + 12)}px`;
       tip.style.top = `${best.y / dpr() - 34}px`;
     }
     return;
@@ -502,7 +531,7 @@ canvas.addEventListener('pointermove', (e) => {
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()] as [{ x: number; y: number }, { x: number; y: number }];
     const d = Math.hypot(a.x - b.x, a.y - b.y);
-    if (pinch > 0) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinch);
+    if (pinch > 0) zoomAt((a.x + b.x) / 2 - offsetX, (a.y + b.y) / 2, d / pinch);
     pinch = d;
   }
 });
@@ -514,7 +543,7 @@ canvas.addEventListener('pointerup', release);
 canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+  zoomAt(e.clientX - offsetX, e.clientY, Math.exp(-e.deltaY * 0.0015));
 }, { passive: false });
 canvas.addEventListener('dblclick', () => setClean(!document.body.classList.contains('clean')));
 
@@ -529,5 +558,7 @@ resize();
 const wanted = location.hash.replace('#', '').split('-');
 if (wanted.includes('clean')) document.body.classList.add('clean');
 if (wanted.includes('color')) mono = false;
+if (wanted.includes('tall')) tall = true;
+resize();
 loadStage(Math.max(0, STAGES.findIndex((s) => s.key === wanted[0])));
 requestAnimationFrame(tick);
