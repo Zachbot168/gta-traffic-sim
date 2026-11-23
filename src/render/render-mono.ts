@@ -271,7 +271,7 @@ export class MonoRenderer {
       }
       if (special) {
         const lift = tiny ? 9 * px : type.length * 0.5 + 9 * px;
-        text(v.kind === 'hero' ? '@' : 'P', v.x, v.y - lift, v.kind === 'hero' ? 17 : 13, WHITE, 'center', true);
+        text(v.kind === 'hero' ? '@' : 'P', v.x, v.y - lift, v.kind === 'hero' ? 22 : 14, WHITE, 'center', true);
       }
     }
   }

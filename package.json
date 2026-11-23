@@ -13,7 +13,9 @@
     "health": "tsx scripts/diag.ts",
     "health:bubble": "tsx scripts/diag2.ts",
     "chases": "tsx scripts/batch-chases.ts",
-    "sweep": "tsx scripts/sweep-pace.ts"
+    "sweep": "tsx scripts/sweep-pace.ts",
+    "record": "tsx scripts/record.ts",
+    "storyboard": "tsx scripts/storyboard.ts"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.1.1",

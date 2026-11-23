@@ -46,10 +46,10 @@ export interface Stage {
   build(map: CityMap): Omit<Scene, 'stage' | 'map' | 'chase' | 'charts'> & { chase?: Chase; charts?: ChartSpec[] };
 }
 
-const none: Overlays = { graph: false, coarse: false, bubble: false, spawns: false };
+export const none: Overlays = { graph: false, coarse: false, bubble: false, spawns: false };
 
-function world(map: CityMap, config: Partial<WorldConfig> = {}): World {
-  return new World(map, WORLD_SEED, config);
+export function world(map: CityMap, config: Partial<WorldConfig> = {}, seed = WORLD_SEED): World {
+  return new World(map, seed, config);
 }
 
 /** A route search between two far-apart points, ready to replay. */
@@ -77,10 +77,10 @@ export function makeDemo(w: World, show: RouteDemo['show'], pick?: Rng): RouteDe
   };
 }
 
-const cityBubble = (spawn: 'radial' | 'path', pinned: boolean, framing: (map: CityMap) => Framing, show: Partial<Overlays>, extra: Partial<WorldConfig> = {}) => (map: CityMap) => {
+export const cityBubble = (spawn: 'radial' | 'path', pinned: boolean, framing: (map: CityMap) => Framing, show: Partial<Overlays>, extra: Partial<WorldConfig> = {}, seed = WORLD_SEED) => (map: CityMap) => {
   // Ambient traffic: most cars wander, some are on a planned trip.
   // Scenes parked over the highway ramps run a little lighter so the ramps keep flowing.
-  const w = world(map, { spawn, routing: 'coarse', tripShare: 0.3, density: pinned ? 1.1 : 1.5, ...extra });
+  const w = world(map, { spawn, routing: 'coarse', tripShare: 0.3, density: pinned ? 1.1 : 1.5, ...extra }, seed);
   const hy = map.highwayY ?? 0;
   const cx = (map.bounds.minX + map.bounds.maxX) * 0.42;
   if (pinned) w.pinFocus(cx, hy);
@@ -313,9 +313,9 @@ export const STAGES: Stage[] = [
     key: '6f',
     chapter: '6. Five stars',
     title: 'Psychic police',
-    caption: 'The same three-star chase as 6b, but every unit always knows where you are. No search ring: they never have to look.',
+    caption: 'A two-star chase where the car breaks line of sight and parks. Every unit knows where it parked anyway. Press J to make them search instead.',
     scale: 'city',
-    build: cityChase({ stars: 3, flee: 'run', cops: 'intercept', knowledge: 'psychic' }, 1.6),
+    build: cityChase({ stars: 2, flee: 'hide', cops: 'chase', knowledge: 'psychic' }, 1.7, 40),
   },
   {
     key: '6g',
@@ -330,9 +330,10 @@ export const STAGES: Stage[] = [
   },
 ];
 
-function cityChase(config: Partial<ChaseConfig>, zoom: number) {
+/** A chase in the city. A different seed gives different traffic, and so a different chase. */
+export function cityChase(config: Partial<ChaseConfig>, zoom: number, seed = WORLD_SEED) {
   return (map: CityMap) => {
-    const scene = cityBubble('path', false, () => ({ kind: 'follow', zoom }), {}, { density: 1.2 })(map);
+    const scene = cityBubble('path', false, () => ({ kind: 'follow', zoom }), {}, { density: 1.2 }, seed)(map);
     // Let traffic settle, then the crime is witnessed.
     for (let i = 0; i < 90; i++) scene.world.step(1 / 30);
     return { ...scene, chase: new Chase(scene.world, config) };
@@ -385,7 +386,7 @@ function curveCharts(): ChartSpec[] {
   return [launch, cornering];
 }
 
-function resultCharts(): ChartSpec[] {
+export function resultCharts(): ChartSpec[] {
   const base = {
     xLabel: 'Wanted level (stars)',
     yLabel: 'Chases escaped',
@@ -414,7 +415,7 @@ function resultCharts(): ChartSpec[] {
   ];
 }
 
-function knowledgeCharts(): ChartSpec[] {
+export function knowledgeCharts(): ChartSpec[] {
   const base = {
     xLabel: 'Wanted level (stars)',
     yLabel: 'Chases escaped',
@@ -447,7 +448,7 @@ function knowledgeCharts(): ChartSpec[] {
 }
 
 /** Chapter 3 payoff chart: search work on each graph as the city grows. */
-function benchChart(): ChartSpec[] {
+export function benchChart(): ChartSpec[] {
   const max = routingBench[routingBench.length - 1]!;
   return [
     {

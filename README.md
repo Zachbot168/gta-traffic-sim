@@ -38,6 +38,8 @@ npm run chases -- --merge  # combine shard files into data/chase-results.csv and
 
 `npm run chases -- 40 0/1 psychic` runs only one kind of police knowledge (`search` or `psychic`). `npm run sweep -- 40` reruns three escape strategies while police top speed goes from 1.3x to 1.9x the limit. `ASPECT=tall npm run frames` renders 1080x1920 portrait stills.
 
+`npm run record` renders every shot in the storyboard to `recordings/<id>.mp4` (1920x1080, 30 fps, needs ffmpeg). `npm run record -- L3-04 L6-02` renders just those shots, and `--preview` makes quick half-size versions in `out/preview`. `npm run storyboard` rewrites `storyboard/STORYBOARD.md`. The shot list, with the narration for each shot, is `storyboard/shots.ts`.
+
 The experiment can be split across cores: `npm run chases -- 40 0/2` and `npm run chases -- 40 1/2` in two terminals, then merge.
 
 ## Controls
