@@ -678,7 +678,7 @@ export const SHOTS: Shot[] = [
     section: 'Loop 6: the experiment',
     kind: 'chart',
     vo: "Here's the twist though. Even with police who search, hiding is the worst plan from two stars up. At four and five stars it never worked once. The best plan at every level was the highway. Forty one percent at five stars.",
-    onScreen: 'Chart: all five plans against searching police. Hiding draws in last, underneath everything.',
+    onScreen: 'Chart: all five plans against searching police. Hiding draws first, then the others stack above it, highway last.',
     tag: 'My sim',
     // Series order in the chart: straight, highway, weave, hide, run.
     chart: (t) => reveal(strategyChart, t, [9, 11, 7, 2.5, 8], 2.5),
